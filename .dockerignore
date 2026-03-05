@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.example
+.git/
+.gitignore
+modex.db
+storage/uploads/*
+storage/outputs/*
+API_DOCUMENTATION.md

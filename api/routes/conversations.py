@@ -1,0 +1,133 @@
+﻿"""
+Conversation & Chat API routes - MongoDB edition.
+"""
+
+from typing import List
+from fastapi import APIRouter, Depends, HTTPException
+from motor.motor_asyncio import AsyncIOMotorDatabase
+
+from core.database import get_db
+from models.api_models import (
+    ConversationCreate,
+    ConversationOut,
+    ConversationListOut,
+    ChatRequest,
+    ChatResponse,
+    MessageOut,
+    FileOut,
+)
+from services.chat_service import ChatService
+
+router = APIRouter(prefix="/conversations", tags=["Conversations"])
+
+
+def _convo_out(c):
+    return ConversationOut(id=c.id, title=c.title, created_at=c.created_at, updated_at=c.updated_at, expires_at=c.expires_at)
+
+
+def _file_out(f):
+    return FileOut(
+        id=f.id,
+        original_filename=f.original_filename,
+        mime_type=f.mime_type,
+        file_size=f.file_size,
+        file_type=f.file_type,
+        status=f.status.value if hasattr(f.status, 'value') else f.status,
+        operation=f.operation,
+        error_message=f.error_message,
+        created_at=f.created_at,
+        has_output=bool(f.output_path),
+    )
+
+
+@router.post("", response_model=ConversationOut, status_code=201)
+async def create_conversation(
+    body: ConversationCreate = ConversationCreate(),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    convo = await ChatService.create_conversation(db, title=body.title)
+    return _convo_out(convo)
+
+
+@router.get("", response_model=ConversationListOut)
+async def list_conversations(
+    limit: int = 50,
+    offset: int = 0,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    convos = await ChatService.list_conversations(db, limit=limit, offset=offset)
+    return ConversationListOut(conversations=[_convo_out(c) for c in convos], total=len(convos))
+
+
+@router.get("/{conversation_id}", response_model=ConversationOut)
+async def get_conversation(
+    conversation_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    convo = await ChatService.get_conversation(db, conversation_id)
+    if not convo:
+        raise HTTPException(404, "Conversation not found")
+    return _convo_out(convo)
+
+
+@router.delete("/{conversation_id}", status_code=204)
+async def delete_conversation(
+    conversation_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    deleted = await ChatService.delete_conversation(db, conversation_id)
+    if not deleted:
+        raise HTTPException(404, "Conversation not found")
+
+
+@router.get("/{conversation_id}/messages", response_model=List[MessageOut])
+async def get_messages(
+    conversation_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    convo = await ChatService.get_conversation(db, conversation_id)
+    if not convo:
+        raise HTTPException(404, "Conversation not found")
+    messages = await ChatService.get_messages(db, conversation_id)
+    return [
+        MessageOut(
+            id=m.id,
+            role=m.role.value if hasattr(m.role, 'value') else m.role,
+            content=m.content,
+            file_ids=m.file_ids,
+            created_at=m.created_at,
+        )
+        for m in messages
+    ]
+
+
+@router.post("/{conversation_id}/chat", response_model=ChatResponse)
+async def send_chat_message(
+    conversation_id: str,
+    body: ChatRequest,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    convo = await ChatService.get_conversation(db, conversation_id)
+    if not convo:
+        raise HTTPException(404, "Conversation not found")
+
+    result = await ChatService.send_message(
+        db=db,
+        conversation_id=conversation_id,
+        user_message=body.message,
+        file_ids=body.file_ids,
+    )
+
+    processed = [_file_out(f) for f in result.get("processed_files", [])]
+    msg = result["message"]
+
+    return ChatResponse(
+        message=MessageOut(
+            id=msg.id,
+            role=msg.role.value if hasattr(msg.role, 'value') else msg.role,
+            content=msg.content,
+            file_ids=msg.file_ids,
+            created_at=msg.created_at,
+        ),
+        processed_files=processed,
+    )
