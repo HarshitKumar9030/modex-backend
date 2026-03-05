@@ -7,6 +7,12 @@ RUN apt-get update && \
         ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+# Explicit path for pdf2image poppler binaries inside Debian slim image
+ENV POPPLER_PATH=/usr/bin
+
+# Fail build early if poppler binaries are unavailable
+RUN pdftoppm -v >/dev/null
+
 WORKDIR /app
 
 COPY requirements.txt .

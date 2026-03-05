@@ -17,7 +17,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from core.config import settings
 from models.schemas import ConversationDoc, MessageDoc, MessageRole, FileDoc
-from services.ai_engine import interpret_request
+from services.ai_engine import interpret_request, analyze_file_content, CONTENT_OPERATIONS
 from services.file_service import FileService
 
 logger = logging.getLogger(__name__)
@@ -127,6 +127,24 @@ class ChatService:
 
         if decision.get("needs_clarification"):
             pass
+        elif decision["operation"] in CONTENT_OPERATIONS:
+            # Content analysis — reads file content and returns a text response (no output file)
+            analysis_files = []
+            target_ids = decision.get("file_ids", [])
+            for f in all_files:
+                if not target_ids or f.id in target_ids:
+                    analysis_files.append({
+                        "id": f.id,
+                        "filename": f.original_filename,
+                        "type": f.file_type,
+                        "path": f.storage_path,
+                    })
+            assistant_content = await analyze_file_content(
+                operation=decision["operation"],
+                files=analysis_files,
+                params=decision.get("params", {}),
+                user_message=user_message,
+            )
         elif decision["operation"] == "multi_operation" and decision.get("operations"):
             # Chained multi-operation: run each step sequentially
             try:
@@ -144,7 +162,9 @@ class ChatService:
                         conversation_id=conversation_id,
                     )
                     all_results.append(f"**{step_op}:** {result_msg}")
-                    all_output_records.extend(output_records)
+                    # Only keep output from the final step to avoid duplicates
+                    if output_records:
+                        all_output_records = output_records
                     # For chained ops, feed output file IDs as input to next step
                     if output_records:
                         step_file_ids = [r.id for r in output_records]

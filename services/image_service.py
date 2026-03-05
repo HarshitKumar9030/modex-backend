@@ -70,7 +70,7 @@ class ImageService:
                 img.save(output_path, format=pil_format, quality=quality, optimize=True)
 
             final_size = os.path.getsize(output_path) / 1024
-            return f"Compressed image to {final_size:.1f} KB ({output_path})"
+            return f"Compressed image to {final_size:.1f} KB"
 
         except Exception as e:
             logger.error(f"Image compress failed: {e}")

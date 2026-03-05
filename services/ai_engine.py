@@ -63,12 +63,22 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 ### Document Operations
 - document_to_pdf: (for txt, md, csv, json, html, xml, rtf, log files) params → {}
 
+### Content Analysis Operations (read-only, no file output)
+- summarize: Summarize the content of a PDF, document, or image. params → { detail?: "brief"|"detailed" }
+- answer_about_content: Answer a specific question about the file's content. params → { question: "the user's question" }
+- extract_text: Extract all text from a PDF or document and return it. params → {}
+- describe_image: Describe what is in an image. params → { detail?: "brief"|"detailed" }
+
 ## Rules
 1. Match the user's intent to the correct operation(s).
 2. Extract parameters from the user's message (e.g. "compress to 100kb" → target_size_kb: 100).
 3. Set file_ids to the IDs of files provided in context. If not clear, use all uploaded files.
 4. If the request is ambiguous or you need more info, set needs_clarification=true and put your question in explanation.
 5. If no matching operation exists, set operation="unknown" and explain in explanation.
+14. For "summarize", "what does this say", "tell me about this file", "explain this document" → use summarize.
+15. For specific questions about file content ("what is the revenue?", "how many pages?", "who is the author?") → use answer_about_content with the user's question in params.
+16. For "extract text", "get text from PDF", "copy all text" → use extract_text.
+17. For "describe this image", "what's in this picture" → use describe_image.
 6. Be smart about unit conversions: "100kb" = 100, "1mb" = 1024, "500 bytes" = 0.5.
 7. For "make it smaller" type requests without a specific target, use quality-based compression.
 8. Always populate the explanation field with a brief human-readable summary of what you'll do.
@@ -200,3 +210,118 @@ async def interpret_request(
             "explanation": f"I encountered an error processing your request: {str(e)}. Please try rephrasing.",
             "needs_clarification": True,
         }
+
+
+# ── Content analysis operations ─────────────────────────────────
+
+CONTENT_OPERATIONS = {"summarize", "answer_about_content", "extract_text", "describe_image"}
+
+
+def _extract_text_from_pdf(path: str, max_chars: int = 50000) -> str:
+    """Extract text from a PDF using PyPDF2."""
+    from PyPDF2 import PdfReader
+
+    reader = PdfReader(path)
+    pages_text = []
+    total = 0
+    for i, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
+        if total + len(text) > max_chars:
+            text = text[: max_chars - total]
+            pages_text.append(f"--- Page {i + 1} ---\n{text}")
+            break
+        pages_text.append(f"--- Page {i + 1} ---\n{text}")
+        total += len(text)
+    return "\n".join(pages_text)
+
+
+def _read_document_text(path: str, max_chars: int = 50000) -> str:
+    """Read text from a document file."""
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        return f.read(max_chars)
+
+
+async def analyze_file_content(
+    operation: str,
+    files: List[Dict[str, Any]],
+    params: Dict[str, Any],
+    user_message: str,
+) -> str:
+    """
+    Perform a content analysis operation on the given files and return
+    a natural-language response (no output file produced).
+    """
+    client = get_client()
+
+    # Collect content from files
+    parts: list = []
+    for f in files:
+        ftype = f["type"]
+        path = f["path"]
+        fname = f["filename"]
+
+        if ftype == "pdf":
+            text = _extract_text_from_pdf(path)
+            if not text.strip():
+                parts.append(f"[{fname}: PDF has no extractable text (scanned/image-only)]")
+            else:
+                parts.append(f"Content of {fname}:\n{text}")
+        elif ftype == "document":
+            text = _read_document_text(path)
+            parts.append(f"Content of {fname}:\n{text}")
+        elif ftype == "image":
+            # Use Gemini multimodal: upload image bytes
+            import pathlib
+            img_path = pathlib.Path(path)
+            mime_map = {
+                ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp",
+                ".tiff": "image/tiff",
+            }
+            mime = mime_map.get(img_path.suffix.lower(), "image/png")
+            img_bytes = img_path.read_bytes()
+            parts.append(types.Part.from_bytes(data=img_bytes, mime_type=mime))
+        else:
+            parts.append(f"[{fname}: unsupported file type for content analysis]")
+
+    if not parts:
+        return "No files found to analyse. Please upload a file first."
+
+    # Build the analysis prompt
+    detail = params.get("detail", "detailed")
+
+    if operation == "summarize":
+        task = f"Provide a {'brief, concise' if detail == 'brief' else 'thorough and detailed'} summary of the following file content. Use clear sections and bullet points where appropriate."
+    elif operation == "answer_about_content":
+        question = params.get("question", user_message)
+        task = f"Answer the following question about the file content: {question}"
+    elif operation == "extract_text":
+        task = "Extract and return ALL the text content from the file exactly as it appears, preserving structure."
+    elif operation == "describe_image":
+        task = f"Provide a {'brief' if detail == 'brief' else 'detailed'} description of what is shown in the image(s)."
+    else:
+        task = user_message
+
+    # Build contents list: text parts as strings, image parts as-is
+    content_parts = []
+    for p in parts:
+        if isinstance(p, str):
+            content_parts.append(types.Part.from_text(text=p))
+        else:
+            content_parts.append(p)
+    content_parts.append(types.Part.from_text(text=f"\n\nTask: {task}"))
+
+    try:
+        response = client.models.generate_content(
+            model=settings.AI_MODEL,
+            contents=[types.Content(role="user", parts=content_parts)],
+            config=types.GenerateContentConfig(
+                system_instruction="You are Modex, an AI file-processing assistant. The user has asked you to analyse their file content. Respond directly, clearly, and helpfully. Use markdown formatting.",
+                temperature=0.3,
+                max_output_tokens=settings.AI_MAX_TOKENS,
+            ),
+        )
+        return response.text or "I could not generate a response for this content."
+    except Exception as e:
+        logger.error(f"Content analysis error: {e}")
+        return f"I encountered an error analysing the file: {str(e)}"
