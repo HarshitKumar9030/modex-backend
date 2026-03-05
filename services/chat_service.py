@@ -163,9 +163,13 @@ class ChatService:
 
                     # Content analysis steps are handled by analyze_file_content, not FileService
                     if step_op in CONTENT_OPERATIONS:
+                        # Content ops should read original source files, not outputs from previous steps
+                        # Re-fetch conversation files to include any newly created files
+                        current_files = await FileService.get_conversation_files(db, conversation_id)
                         analysis_files = []
-                        target_ids = step_file_ids or decision.get("file_ids", [])
-                        for f in all_files:
+                        # Always prefer top-level file_ids (the user's uploads) for content analysis
+                        target_ids = decision.get("file_ids", [])
+                        for f in current_files:
                             if not target_ids or f.id in target_ids:
                                 analysis_files.append({
                                     "id": f.id,
@@ -194,12 +198,14 @@ class ChatService:
                     if output_records:
                         all_output_records = output_records
                     # For chained ops, feed output file IDs as input to next step
+                    # but only if the next step is a file-processing op, not a content analysis op
                     if output_records:
-                        step_file_ids = [r.id for r in output_records]
-                        # Update the next step's file_ids if applicable
+                        next_ids = [r.id for r in output_records]
                         step_idx = decision["operations"].index(step)
                         if step_idx + 1 < len(decision["operations"]):
-                            decision["operations"][step_idx + 1]["file_ids"] = step_file_ids
+                            next_step = decision["operations"][step_idx + 1]
+                            if next_step["operation"] not in CONTENT_OPERATIONS:
+                                next_step["file_ids"] = next_ids
                 assistant_content = f"{decision['explanation']}\n\n" + "\n\n".join(all_results)
                 processed_files = all_output_records
             except Exception as e:
