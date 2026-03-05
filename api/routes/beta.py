@@ -16,6 +16,7 @@ from models.api_models import (
     BetaSignupOut,
     BetaUpdateRequest,
 )
+from services.email_service import send_beta_status_email
 
 router = APIRouter(tags=["Beta"])
 
@@ -109,6 +110,11 @@ async def admin_update_beta(
         raise HTTPException(404, "Signup not found")
 
     s = BetaSignupDoc.from_mongo(result)
+    
+    # Send email notification asynchronously
+    import asyncio
+    asyncio.create_task(send_beta_status_email(s.email, body.status))
+
     return BetaSignupOut(
         id=s.id,
         email=s.email,

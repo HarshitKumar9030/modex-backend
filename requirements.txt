@@ -13,6 +13,7 @@ pikepdf==9.4.2
 img2pdf==0.5.1
 pdf2image==1.17.0
 aiofiles==24.1.0
+httpx==0.28.1
 pydub==0.25.1
 apscheduler==3.10.4
 reportlab==4.4.0

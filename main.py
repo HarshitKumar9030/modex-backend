@@ -15,7 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from core.config import settings
 from core.database import init_db, get_db, close_db
 from core.data_retention import cleanup_expired_data
-from api.routes import conversations, files
+from api.routes import conversations, files, contact
 from api.routes import beta as beta_routes
 from models.api_models import HealthResponse
 
@@ -92,6 +92,7 @@ app.add_middleware(
 app.include_router(conversations.router, prefix="/api/v1")
 app.include_router(files.router, prefix="/api/v1")
 app.include_router(beta_routes.router, prefix="/api/v1")
+app.include_router(contact.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health", response_model=HealthResponse, tags=["Health"])

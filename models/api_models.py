@@ -100,6 +100,25 @@ class BetaUpdateRequest(BaseModel):
     status: str = Field(..., pattern="^(approved|rejected)$")
 
 
+# ─── Feedback / Contact ──────────────────────────────────────────
+
+class FeedbackCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    email: EmailStr
+    message: str = Field(..., min_length=10, max_length=5000)
+
+class FeedbackOut(BaseModel):
+    id: str
+    name: str
+    email: str
+    message: str
+    created_at: datetime
+
+class FeedbackListOut(BaseModel):
+    feedbacks: List[FeedbackOut]
+    total: int
+
+
 # ─── AI Operation Schema ─────────────────────────────────────────
 
 class OperationDecision(BaseModel):

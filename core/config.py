@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     BETA_ENABLED: bool = True
     ADMIN_SECRET: str = "modex-admin-secret-2026"
 
+    # Mailgun Email Configuration
+    MAILGUN_API_KEY: str = ""
+    MAILGUN_DOMAIN: str = ""
+    MAILGUN_URL: str = "https://api.mailgun.net"
+    SENDER_EMAIL: str = "noreply@agfe.tech"
+    SENDER_NAME: str = "Modex Team"
+
     # ---------- computed helpers ----------
 
     @property

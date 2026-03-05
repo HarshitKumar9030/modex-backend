@@ -120,3 +120,22 @@ class BetaSignupDoc(BaseModel):
         if doc and "_id" in doc:
             doc["id"] = doc.pop("_id")
         return cls(**doc)
+
+
+class FeedbackDoc(BaseModel):
+    id: str = Field(default_factory=generate_uuid)
+    name: str
+    email: str
+    message: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def to_mongo(self) -> dict:
+        d = self.model_dump()
+        d["_id"] = d.pop("id")
+        return d
+
+    @classmethod
+    def from_mongo(cls, doc: dict) -> "FeedbackDoc":
+        if doc and "_id" in doc:
+            doc["id"] = doc.pop("_id")
+        return cls(**doc)
