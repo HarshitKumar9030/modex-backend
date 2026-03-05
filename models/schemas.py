@@ -124,8 +124,9 @@ class BetaSignupDoc(BaseModel):
 
 class FeedbackDoc(BaseModel):
     id: str = Field(default_factory=generate_uuid)
-    name: str
     email: str
+    type: str = "feedback"
+    subject: str = ""
     message: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

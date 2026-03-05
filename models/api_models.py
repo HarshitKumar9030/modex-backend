@@ -103,14 +103,16 @@ class BetaUpdateRequest(BaseModel):
 # ─── Feedback / Contact ──────────────────────────────────────────
 
 class FeedbackCreateRequest(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
     email: EmailStr
+    type: str = Field("feedback", max_length=50)
+    subject: str = Field(..., min_length=1, max_length=200)
     message: str = Field(..., min_length=10, max_length=5000)
 
 class FeedbackOut(BaseModel):
     id: str
-    name: str
     email: str
+    type: str
+    subject: str
     message: str
     created_at: datetime
 
