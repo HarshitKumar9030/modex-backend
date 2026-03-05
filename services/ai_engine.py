@@ -69,6 +69,9 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 - extract_text: Extract all text from a PDF or document and return it. params → {}
 - describe_image: Describe what is in an image. params → { detail?: "brief"|"detailed" }
 
+### General
+- chat: For general questions, greetings, or conversations that don't involve file operations. params → {}
+
 ## Rules
 1. Match the user's intent to the correct operation(s).
 2. Extract parameters from the user's message (e.g. "compress to 100kb" → target_size_kb: 100).
@@ -79,6 +82,8 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 15. For specific questions about file content ("what is the revenue?", "how many pages?", "who is the author?") → use answer_about_content with the user's question in params.
 16. For "extract text", "get text from PDF", "copy all text" → use extract_text.
 17. For "describe this image", "what's in this picture" → use describe_image.
+18. For greetings, general knowledge questions, or any request that doesn't require file processing → use chat. Put your full conversational response in the explanation field.
+19. Content analysis operations (summarize, answer_about_content, extract_text, describe_image) CAN be part of a multi_operation chain alongside file operations. They will be handled correctly.
 6. Be smart about unit conversions: "100kb" = 100, "1mb" = 1024, "500 bytes" = 0.5.
 7. For "make it smaller" type requests without a specific target, use quality-based compression.
 8. Always populate the explanation field with a brief human-readable summary of what you'll do.
@@ -215,6 +220,7 @@ async def interpret_request(
 # ── Content analysis operations ─────────────────────────────────
 
 CONTENT_OPERATIONS = {"summarize", "answer_about_content", "extract_text", "describe_image"}
+CHAT_OPERATION = "chat"
 
 
 def _extract_text_from_pdf(path: str, max_chars: int = 50000) -> str:
@@ -325,3 +331,38 @@ async def analyze_file_content(
     except Exception as e:
         logger.error(f"Content analysis error: {e}")
         return f"I encountered an error analysing the file: {str(e)}"
+
+
+async def general_chat(
+    user_message: str,
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+) -> str:
+    """Handle general conversation that doesn't involve file operations."""
+    client = get_client()
+
+    contents = []
+    if conversation_history:
+        for msg in conversation_history[-10:]:
+            role = "user" if msg["role"] == "user" else "model"
+            contents.append(
+                types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])])
+            )
+
+    contents.append(
+        types.Content(role="user", parts=[types.Part.from_text(text=user_message)])
+    )
+
+    try:
+        response = client.models.generate_content(
+            model=settings.AI_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction="You are Modex, a friendly and knowledgeable AI assistant. You specialise in file processing (PDFs, images, audio) but can also answer general questions helpfully. Respond clearly using markdown formatting. Be concise but thorough.",
+                temperature=0.7,
+                max_output_tokens=settings.AI_MAX_TOKENS,
+            ),
+        )
+        return response.text or "I'm not sure how to respond to that."
+    except Exception as e:
+        logger.error(f"General chat error: {e}")
+        return f"I encountered an error: {str(e)}"

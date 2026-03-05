@@ -17,7 +17,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from core.config import settings
 from models.schemas import ConversationDoc, MessageDoc, MessageRole, FileDoc
-from services.ai_engine import interpret_request, analyze_file_content, CONTENT_OPERATIONS
+from services.ai_engine import interpret_request, analyze_file_content, general_chat, CONTENT_OPERATIONS, CHAT_OPERATION
 from services.file_service import FileService
 
 logger = logging.getLogger(__name__)
@@ -127,6 +127,12 @@ class ChatService:
 
         if decision.get("needs_clarification"):
             pass
+        elif decision["operation"] == CHAT_OPERATION:
+            # General conversational response — no file processing needed
+            assistant_content = await general_chat(
+                user_message=user_message,
+                conversation_history=history,
+            )
         elif decision["operation"] in CONTENT_OPERATIONS:
             # Content analysis — reads file content and returns a text response (no output file)
             analysis_files = []
@@ -154,6 +160,28 @@ class ChatService:
                     step_op = step["operation"]
                     step_file_ids = step.get("file_ids", decision.get("file_ids", []))
                     step_params = step.get("params", {})
+
+                    # Content analysis steps are handled by analyze_file_content, not FileService
+                    if step_op in CONTENT_OPERATIONS:
+                        analysis_files = []
+                        target_ids = step_file_ids or decision.get("file_ids", [])
+                        for f in all_files:
+                            if not target_ids or f.id in target_ids:
+                                analysis_files.append({
+                                    "id": f.id,
+                                    "filename": f.original_filename,
+                                    "type": f.file_type,
+                                    "path": f.storage_path,
+                                })
+                        result_msg = await analyze_file_content(
+                            operation=step_op,
+                            files=analysis_files,
+                            params=step_params,
+                            user_message=user_message,
+                        )
+                        all_results.append(f"**{step_op}:**\n{result_msg}")
+                        continue
+
                     result_msg, output_records = await FileService.process_operation(
                         db=db,
                         operation=step_op,
@@ -162,7 +190,7 @@ class ChatService:
                         conversation_id=conversation_id,
                     )
                     all_results.append(f"**{step_op}:** {result_msg}")
-                    # Only keep output from the final step to avoid duplicates
+                    # Only keep output from the final file-producing step to avoid duplicates
                     if output_records:
                         all_output_records = output_records
                     # For chained ops, feed output file IDs as input to next step
