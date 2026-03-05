@@ -64,7 +64,7 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 - document_to_pdf: (for txt, md, csv, json, html, xml, rtf, log files) params → {}
 
 ## Rules
-1. Match the user's intent to EXACTLY ONE operation.
+1. Match the user's intent to the correct operation(s).
 2. Extract parameters from the user's message (e.g. "compress to 100kb" → target_size_kb: 100).
 3. Set file_ids to the IDs of files provided in context. If not clear, use all uploaded files.
 4. If the request is ambiguous or you need more info, set needs_clarification=true and put your question in explanation.
@@ -75,6 +75,8 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 9. For "extract images from PDF" / "get photos from PDF" / "pull charts from PDF" → use extract_pdf_images.
 10. For "convert PDF to images" / "screenshot PDF pages" / "render pages" → use pdf_pages_to_images.
 11. The older pdf_to_images is a legacy alias — prefer pdf_pages_to_images for full-page renders and extract_pdf_images for embedded content.
+12. **Multi-operations**: If the user requests MULTIPLE operations (e.g. "compress and convert to png", "resize to 800px wide and convert to webp"), populate the `operations` array with each step in order. Each step has its own operation, file_ids, and params. The main `operation` field should be set to "multi_operation" and `params` should be empty.
+13. For single operations, leave `operations` as an empty array and use `operation`/`params` as before.
 """
 
 # ── JSON schema for structured output ─────────────────────────────
@@ -85,7 +87,7 @@ OPERATION_SCHEMA = {
     "properties": {
         "operation": {
             "type": "string",
-            "description": "Operation name from the available operations list"
+            "description": "Operation name from the available operations list, or 'multi_operation' for chained ops"
         },
         "file_ids": {
             "type": "array",
@@ -94,7 +96,7 @@ OPERATION_SCHEMA = {
         },
         "params": {
             "type": "object",
-            "description": "Operation-specific parameters"
+            "description": "Operation-specific parameters (empty if multi_operation)"
         },
         "explanation": {
             "type": "string",
@@ -103,6 +105,19 @@ OPERATION_SCHEMA = {
         "needs_clarification": {
             "type": "boolean",
             "description": "True if more info is needed from the user"
+        },
+        "operations": {
+            "type": "array",
+            "description": "Ordered list of operations for multi-operation requests. Empty for single ops.",
+            "items": {
+                "type": "object",
+                "required": ["operation", "params"],
+                "properties": {
+                    "operation": {"type": "string"},
+                    "file_ids": {"type": "array", "items": {"type": "string"}},
+                    "params": {"type": "object"}
+                }
+            }
         }
     }
 }

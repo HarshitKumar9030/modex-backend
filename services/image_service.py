@@ -174,11 +174,14 @@ class ImageService:
     # ── Convert ───────────────────────────────────────────────────
 
     @staticmethod
-    async def convert_image(input_path: str, output_path: str, params: Dict[str, Any]) -> str:
+    async def convert_image(input_path: str, output_path: str, params: Dict[str, Any]) -> tuple[str, str]:
         """
         Convert image format. Params:
           - format (str): target format, e.g. "png", "jpg", "webp"
           - quality (int, optional): 1-100 for lossy formats
+
+        Returns:
+          (message, actual_output_path)
         """
         target_format = params.get("format", "png").lower()
         quality = params.get("quality", 90)
@@ -201,7 +204,7 @@ class ImageService:
                 save_kwargs["quality"] = quality
 
             img.save(output_path, **save_kwargs)
-            return f"Converted to {target_format.upper()} ({os.path.getsize(output_path) / 1024:.1f} KB)"
+            return f"Converted to {target_format.upper()} ({os.path.getsize(output_path) / 1024:.1f} KB)", output_path
 
         except Exception as e:
             logger.error(f"Image convert failed: {e}")

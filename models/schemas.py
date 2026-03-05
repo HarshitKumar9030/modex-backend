@@ -36,6 +36,7 @@ class BetaStatus(str, enum.Enum):
 
 class ConversationDoc(BaseModel):
     id: str = Field(default_factory=generate_uuid)
+    user_id: str = ""
     title: Optional[str] = "New Conversation"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

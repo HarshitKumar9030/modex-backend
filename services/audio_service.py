@@ -73,11 +73,14 @@ class AudioService:
     # ── Convert ───────────────────────────────────────────────────
 
     @staticmethod
-    async def convert_audio(input_path: str, output_path: str, params: Dict[str, Any]) -> str:
+    async def convert_audio(input_path: str, output_path: str, params: Dict[str, Any]) -> tuple[str, str]:
         """
         Convert audio format. Params:
           - format (str): target format, e.g. "mp3", "wav", "ogg", "flac"
           - bitrate (str, optional): e.g. "192k"
+
+        Returns:
+          (message, actual_output_path)
         """
         target_format = params.get("format", "mp3").lower()
         bitrate = params.get("bitrate", "192k")
@@ -97,7 +100,7 @@ class AudioService:
 
             audio.export(output_path, **export_params)
             final_size = os.path.getsize(output_path) / 1024
-            return f"Converted to {target_format.upper()} ({final_size:.1f} KB)"
+            return f"Converted to {target_format.upper()} ({final_size:.1f} KB)", output_path
 
         except Exception as e:
             logger.error(f"Audio convert failed: {e}")

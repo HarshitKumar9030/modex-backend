@@ -26,10 +26,11 @@ logger = logging.getLogger(__name__)
 class ChatService:
 
     @staticmethod
-    async def create_conversation(db: AsyncIOMotorDatabase, title: Optional[str] = None) -> ConversationDoc:
+    async def create_conversation(db: AsyncIOMotorDatabase, title: Optional[str] = None, user_id: str = "") -> ConversationDoc:
         now = datetime.now(timezone.utc)
         convo = ConversationDoc(
             title=title or "New Conversation",
+            user_id=user_id,
             created_at=now,
             updated_at=now,
             expires_at=now + timedelta(hours=settings.DATA_RETENTION_HOURS),
@@ -38,23 +39,29 @@ class ChatService:
         return convo
 
     @staticmethod
-    async def get_conversation(db: AsyncIOMotorDatabase, conversation_id: str) -> Optional[ConversationDoc]:
-        doc = await db.conversations.find_one({"_id": conversation_id})
+    async def get_conversation(db: AsyncIOMotorDatabase, conversation_id: str, user_id: str = "") -> Optional[ConversationDoc]:
+        query: dict = {"_id": conversation_id}
+        if user_id:
+            query["user_id"] = user_id
+        doc = await db.conversations.find_one(query)
         return ConversationDoc.from_mongo(doc) if doc else None
 
     @staticmethod
-    async def list_conversations(db: AsyncIOMotorDatabase, limit: int = 50, offset: int = 0) -> List[ConversationDoc]:
+    async def list_conversations(db: AsyncIOMotorDatabase, limit: int = 50, offset: int = 0, user_id: str = "") -> List[ConversationDoc]:
         now = datetime.now(timezone.utc)
+        query: dict = {"expires_at": {"$gt": now}}
+        if user_id:
+            query["user_id"] = user_id
         cursor = db.conversations.find(
-            {"expires_at": {"$gt": now}}
+            query
         ).sort("updated_at", -1).skip(offset).limit(limit)
         return [ConversationDoc.from_mongo(doc) async for doc in cursor]
 
     @staticmethod
-    async def delete_conversation(db: AsyncIOMotorDatabase, conversation_id: str) -> bool:
+    async def delete_conversation(db: AsyncIOMotorDatabase, conversation_id: str, user_id: str = "") -> bool:
         from core.data_retention import delete_conversation_files
 
-        convo = await ChatService.get_conversation(db, conversation_id)
+        convo = await ChatService.get_conversation(db, conversation_id, user_id=user_id)
         if not convo:
             return False
 
@@ -120,6 +127,35 @@ class ChatService:
 
         if decision.get("needs_clarification"):
             pass
+        elif decision["operation"] == "multi_operation" and decision.get("operations"):
+            # Chained multi-operation: run each step sequentially
+            try:
+                all_results = []
+                all_output_records = []
+                for step in decision["operations"]:
+                    step_op = step["operation"]
+                    step_file_ids = step.get("file_ids", decision.get("file_ids", []))
+                    step_params = step.get("params", {})
+                    result_msg, output_records = await FileService.process_operation(
+                        db=db,
+                        operation=step_op,
+                        file_ids=step_file_ids,
+                        params=step_params,
+                        conversation_id=conversation_id,
+                    )
+                    all_results.append(f"**{step_op}:** {result_msg}")
+                    all_output_records.extend(output_records)
+                    # For chained ops, feed output file IDs as input to next step
+                    if output_records:
+                        step_file_ids = [r.id for r in output_records]
+                        # Update the next step's file_ids if applicable
+                        step_idx = decision["operations"].index(step)
+                        if step_idx + 1 < len(decision["operations"]):
+                            decision["operations"][step_idx + 1]["file_ids"] = step_file_ids
+                assistant_content = f"{decision['explanation']}\n\n" + "\n\n".join(all_results)
+                processed_files = all_output_records
+            except Exception as e:
+                assistant_content = f"I tried to run multiple operations, but encountered an error: {str(e)}"
         elif decision["operation"] != "unknown":
             try:
                 result_msg, output_records = await FileService.process_operation(

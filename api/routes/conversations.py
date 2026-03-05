@@ -2,8 +2,8 @@
 Conversation & Chat API routes - MongoDB edition.
 """
 
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Header
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from core.database import get_db
@@ -19,6 +19,10 @@ from models.api_models import (
 from services.chat_service import ChatService
 
 router = APIRouter(prefix="/conversations", tags=["Conversations"])
+
+
+def _get_user_id(x_user_id: Optional[str] = Header(None)) -> str:
+    return x_user_id or ""
 
 
 def _convo_out(c):
@@ -44,8 +48,9 @@ def _file_out(f):
 async def create_conversation(
     body: ConversationCreate = ConversationCreate(),
     db: AsyncIOMotorDatabase = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
 ):
-    convo = await ChatService.create_conversation(db, title=body.title)
+    convo = await ChatService.create_conversation(db, title=body.title, user_id=user_id)
     return _convo_out(convo)
 
 
@@ -54,8 +59,9 @@ async def list_conversations(
     limit: int = 50,
     offset: int = 0,
     db: AsyncIOMotorDatabase = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
 ):
-    convos = await ChatService.list_conversations(db, limit=limit, offset=offset)
+    convos = await ChatService.list_conversations(db, limit=limit, offset=offset, user_id=user_id)
     return ConversationListOut(conversations=[_convo_out(c) for c in convos], total=len(convos))
 
 
@@ -63,8 +69,9 @@ async def list_conversations(
 async def get_conversation(
     conversation_id: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
 ):
-    convo = await ChatService.get_conversation(db, conversation_id)
+    convo = await ChatService.get_conversation(db, conversation_id, user_id=user_id)
     if not convo:
         raise HTTPException(404, "Conversation not found")
     return _convo_out(convo)
@@ -74,8 +81,9 @@ async def get_conversation(
 async def delete_conversation(
     conversation_id: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
 ):
-    deleted = await ChatService.delete_conversation(db, conversation_id)
+    deleted = await ChatService.delete_conversation(db, conversation_id, user_id=user_id)
     if not deleted:
         raise HTTPException(404, "Conversation not found")
 
@@ -84,8 +92,9 @@ async def delete_conversation(
 async def get_messages(
     conversation_id: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
 ):
-    convo = await ChatService.get_conversation(db, conversation_id)
+    convo = await ChatService.get_conversation(db, conversation_id, user_id=user_id)
     if not convo:
         raise HTTPException(404, "Conversation not found")
     messages = await ChatService.get_messages(db, conversation_id)
@@ -106,8 +115,9 @@ async def send_chat_message(
     conversation_id: str,
     body: ChatRequest,
     db: AsyncIOMotorDatabase = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
 ):
-    convo = await ChatService.get_conversation(db, conversation_id)
+    convo = await ChatService.get_conversation(db, conversation_id, user_id=user_id)
     if not convo:
         raise HTTPException(404, "Conversation not found")
 

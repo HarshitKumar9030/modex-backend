@@ -3,9 +3,9 @@ File upload & download API routes - MongoDB edition.
 """
 
 import os
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Header
 from fastapi.responses import FileResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -15,6 +15,10 @@ from services.file_service import FileService
 from services.chat_service import ChatService
 
 router = APIRouter(prefix="/conversations/{conversation_id}/files", tags=["Files"])
+
+
+def _get_user_id(x_user_id: Optional[str] = Header(None)) -> str:
+    return x_user_id or ""
 
 
 def _file_out(f):
@@ -37,8 +41,9 @@ async def upload_files(
     conversation_id: str,
     files: List[UploadFile] = File(..., description="Files to upload"),
     db: AsyncIOMotorDatabase = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
 ):
-    convo = await ChatService.get_conversation(db, conversation_id)
+    convo = await ChatService.get_conversation(db, conversation_id, user_id=user_id)
     if not convo:
         raise HTTPException(404, "Conversation not found")
 

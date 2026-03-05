@@ -350,16 +350,18 @@ async def _dispatch_operation(
 
     elif operation == "convert_image":
         target_fmt = params.get("format", "png")
+        mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "bmp": "image/bmp", "tiff": "image/tiff", "gif": "image/gif"}
         results = []
         for f in files:
             if f.file_type != "image":
                 continue
             out_path = os.path.join(output_dir, f"converted_{f.id}.{target_fmt}")
-            msg = await ImageService.convert_image(f.storage_path, out_path, params)
-            await db.files.update_one({"_id": f.id}, {"$set": {"output_path": out_path}})
-            f.output_path = out_path
+            msg, actual_path = await ImageService.convert_image(f.storage_path, out_path, params)
+            out_name = f"{os.path.splitext(f.original_filename)[0]}.{target_fmt}"
+            out_mime = mime_map.get(target_fmt, f"image/{target_fmt}")
+            rec = await _create_output_record(db, conversation_id, out_name, actual_path, out_mime, "image", operation)
+            output_records.append(rec)
             results.append(msg)
-            output_records.append(f)
         return "\n".join(results) or "No images to convert.", output_records
 
     # ── Audio operations ──────────────────────────────────────────
@@ -379,16 +381,18 @@ async def _dispatch_operation(
 
     elif operation == "convert_audio":
         target_fmt = params.get("format", "mp3")
+        audio_mime_map = {"mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg", "flac": "audio/flac", "aac": "audio/aac", "m4a": "audio/mp4"}
         results = []
         for f in files:
             if f.file_type != "audio":
                 continue
             out_path = os.path.join(output_dir, f"converted_{f.id}.{target_fmt}")
-            msg = await AudioService.convert_audio(f.storage_path, out_path, params)
-            await db.files.update_one({"_id": f.id}, {"$set": {"output_path": out_path}})
-            f.output_path = out_path
+            msg, actual_path = await AudioService.convert_audio(f.storage_path, out_path, params)
+            out_name = f"{os.path.splitext(f.original_filename)[0]}.{target_fmt}"
+            out_mime = audio_mime_map.get(target_fmt, f"audio/{target_fmt}")
+            rec = await _create_output_record(db, conversation_id, out_name, actual_path, out_mime, "audio", operation)
+            output_records.append(rec)
             results.append(msg)
-            output_records.append(f)
         return "\n".join(results) or "No audio files to convert.", output_records
 
     elif operation == "trim_audio":
