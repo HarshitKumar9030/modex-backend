@@ -18,3 +18,5 @@ pydub==0.25.1
 apscheduler==3.10.4
 reportlab==4.4.0
 markdown==3.7
+rembg==2.0.57
+pytesseract==0.3.13

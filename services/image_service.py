@@ -2,10 +2,11 @@
 Image processing service.
 
 Operations:
-  - compress_image   : Reduce image file size (target_size_kb or quality)
-  - resize_image     : Resize to given dimensions
-  - crop_image       : Crop to given box
-  - convert_image    : Convert between formats (png, jpg, webp, bmp, tiff, gif)
+  - compress_image      : Reduce image file size (target_size_kb or quality)
+  - resize_image        : Resize to given dimensions
+  - crop_image          : Crop to given box
+  - convert_image       : Convert between formats (png, jpg, webp, bmp, tiff, gif)
+  - remove_background   : Remove image background (AI-powered)
 """
 
 import os
@@ -209,6 +210,34 @@ class ImageService:
         except Exception as e:
             logger.error(f"Image convert failed: {e}")
             raise ValueError(f"Failed to convert image: {e}")
+
+    # ── Remove Background ─────────────────────────────────────────
+
+    @staticmethod
+    async def remove_background(input_path: str, output_path: str, params: Dict[str, Any]) -> str:
+        """
+        Remove the background from an image. Params:
+          - model (str, optional): rembg model name, default "u2net"
+        Always outputs PNG (transparency support).
+        """
+        from rembg import remove as rembg_remove
+
+        try:
+            img = Image.open(input_path).convert("RGBA")
+            result = rembg_remove(img)
+
+            # Always save as PNG for transparency
+            base = os.path.splitext(output_path)[0]
+            output_path = f"{base}.png"
+            result.save(output_path, format="PNG")
+
+            return f"Background removed — saved as PNG ({os.path.getsize(output_path) / 1024:.1f} KB)"
+
+        except ImportError:
+            raise ValueError("Background removal is not available — rembg is not installed")
+        except Exception as e:
+            logger.error(f"Background removal failed: {e}")
+            raise ValueError(f"Failed to remove background: {e}")
 
 
 # ── Private helpers ───────────────────────────────────────────────

@@ -9,6 +9,10 @@ Operations:
   - pdf_to_images    : Convert each page to an image
   - images_to_pdf    : Convert images into a single PDF
   - document_to_pdf  : Convert text/markdown/csv/json/html/xml/etc to PDF
+  - watermark_pdf    : Add text watermark to PDF pages
+  - protect_pdf      : Password-protect a PDF
+  - unlock_pdf       : Remove password from a PDF
+  - ocr_pdf          : OCR a scanned PDF to make it searchable
 """
 
 import os
@@ -517,6 +521,152 @@ class PDFService:
         doc.build(story)
         size_kb = os.path.getsize(output_path) / 1024
         return f"Converted HTML to PDF ({size_kb:.1f} KB)"
+
+    # ── Watermark ─────────────────────────────────────────────────
+
+    @staticmethod
+    async def watermark_pdf(input_path: str, output_path: str, params: Dict[str, Any]) -> str:
+        """
+        Add a text watermark to every page. Params:
+          - text (str): watermark text, default "CONFIDENTIAL"
+          - opacity (float): 0.0-1.0, default 0.15
+          - angle (int): rotation degrees, default 45
+          - font_size (int): default 60
+        """
+        from reportlab.lib.colors import Color
+
+        text = params.get("text", "CONFIDENTIAL")
+        opacity = max(0.01, min(1.0, params.get("opacity", 0.15)))
+        angle = params.get("angle", 45)
+        font_size = params.get("font_size", 60)
+
+        try:
+            reader = PdfReader(input_path)
+            page_w = float(reader.pages[0].mediabox.width)
+            page_h = float(reader.pages[0].mediabox.height)
+
+            # Create watermark overlay PDF in memory
+            watermark_buf = io.BytesIO()
+            from reportlab.pdfgen import canvas as rl_canvas
+            c = rl_canvas.Canvas(watermark_buf, pagesize=(page_w, page_h))
+            c.saveState()
+            c.setFont("Helvetica-Bold", font_size)
+            c.setFillColor(Color(0.5, 0.5, 0.5, alpha=opacity))
+            c.translate(page_w / 2, page_h / 2)
+            c.rotate(angle)
+            c.drawCentredString(0, 0, text)
+            c.restoreState()
+            c.save()
+            watermark_buf.seek(0)
+
+            watermark_reader = PdfReader(watermark_buf)
+            watermark_page = watermark_reader.pages[0]
+
+            writer = PdfWriter()
+            for page in reader.pages:
+                page.merge_page(watermark_page)
+                writer.add_page(page)
+
+            with open(output_path, "wb") as f:
+                writer.write(f)
+
+            return f"Added watermark '{text}' to {len(reader.pages)} pages"
+
+        except Exception as e:
+            logger.error(f"PDF watermark failed: {e}")
+            raise ValueError(f"Failed to watermark PDF: {e}")
+
+    # ── Password protect ──────────────────────────────────────────
+
+    @staticmethod
+    async def protect_pdf(input_path: str, output_path: str, params: Dict[str, Any]) -> str:
+        """
+        Password-protect a PDF. Params:
+          - password (str): the password to set
+          - owner_password (str, optional): separate owner password for editing
+        """
+        password = params.get("password", "modex123")
+        owner_password = params.get("owner_password", password)
+
+        try:
+            with pikepdf.open(input_path) as pdf:
+                encryption = pikepdf.Encryption(
+                    owner=owner_password,
+                    user=password,
+                    R=6,  # AES-256
+                )
+                pdf.save(output_path, encryption=encryption)
+
+            return f"PDF protected with password (AES-256 encryption)"
+
+        except Exception as e:
+            logger.error(f"PDF protect failed: {e}")
+            raise ValueError(f"Failed to protect PDF: {e}")
+
+    # ── Unlock / remove password ──────────────────────────────────
+
+    @staticmethod
+    async def unlock_pdf(input_path: str, output_path: str, params: Dict[str, Any]) -> str:
+        """
+        Remove password from a PDF. Params:
+          - password (str): the current password
+        """
+        password = params.get("password", "")
+
+        try:
+            with pikepdf.open(input_path, password=password) as pdf:
+                pdf.save(output_path)
+
+            return "PDF unlocked — password removed"
+
+        except pikepdf.PasswordError:
+            raise ValueError("Incorrect password. Please provide the correct PDF password.")
+        except Exception as e:
+            logger.error(f"PDF unlock failed: {e}")
+            raise ValueError(f"Failed to unlock PDF: {e}")
+
+    # ── OCR (scanned PDF → searchable PDF) ────────────────────────
+
+    @staticmethod
+    async def ocr_pdf(input_path: str, output_path: str, params: Dict[str, Any]) -> str:
+        """
+        OCR a scanned PDF: render pages as images, run Tesseract, produce a searchable PDF.
+        Params:
+          - language (str): Tesseract language code, default "eng"
+          - dpi (int): render resolution, default 300
+        """
+        import pytesseract
+
+        language = params.get("language", "eng")
+        dpi = params.get("dpi", 300)
+
+        try:
+            images = convert_from_path(input_path, dpi=dpi)
+            if not images:
+                raise ValueError("Could not render any pages from the PDF")
+
+            pdf_pages = []
+            for img in images:
+                page_pdf = pytesseract.image_to_pdf_or_hocr(img, lang=language, extension="pdf")
+                pdf_pages.append(page_pdf)
+
+            # Merge OCR'd pages into single PDF
+            writer = PdfWriter()
+            for page_bytes in pdf_pages:
+                reader = PdfReader(io.BytesIO(page_bytes))
+                for page in reader.pages:
+                    writer.add_page(page)
+
+            with open(output_path, "wb") as f:
+                writer.write(f)
+
+            return f"OCR complete — {len(images)} pages made searchable (lang: {language})"
+
+        except ImportError:
+            raise ValueError("OCR is not available — pytesseract is not installed")
+        except Exception as e:
+            logger.error(f"PDF OCR failed: {e}")
+            raise ValueError(f"Failed to OCR PDF: {e}")
 
 
 # ── Private helpers ───────────────────────────────────────────────

@@ -3,6 +3,7 @@ Email Service for Modex.
 Sends HTML emails via the Mailgun HTTP API.
 """
 import httpx
+import asyncio
 import logging
 
 from core.config import settings
@@ -19,24 +20,37 @@ async def send_email_async(to_email: str, subject: str, html_content: str):
     sender = f"{settings.SENDER_NAME} <{settings.SENDER_EMAIL}>"
     url = f"{settings.MAILGUN_URL}/v3/{settings.MAILGUN_DOMAIN}/messages"
 
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                url,
-                auth=("api", settings.MAILGUN_API_KEY),
-                data={
-                    "from": sender,
-                    "to": [to_email],
-                    "subject": subject,
-                    "html": html_content,
-                },
-            )
-            resp.raise_for_status()
-            logger.info(f"Mailgun email sent to {to_email}: {subject}")
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Mailgun HTTP {e.response.status_code} sending to {to_email}: {e.response.text}")
-    except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {e}")
+    last_error = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    url,
+                    auth=("api", settings.MAILGUN_API_KEY),
+                    data={
+                        "from": sender,
+                        "to": [to_email],
+                        "subject": subject,
+                        "html": html_content,
+                    },
+                )
+                resp.raise_for_status()
+                logger.info(f"Mailgun email sent to {to_email}: {subject}")
+                return
+        except httpx.HTTPStatusError as e:
+            last_error = e
+            if e.response.status_code < 500:
+                logger.error(f"Mailgun HTTP {e.response.status_code} sending to {to_email}: {e.response.text}")
+                return  # client error, don't retry
+            logger.warning(f"Mailgun server error (attempt {attempt + 1}/3): {e.response.status_code}")
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Mailgun send failed (attempt {attempt + 1}/3): {e}")
+
+        if attempt < 2:
+            await asyncio.sleep(2 ** attempt)
+
+    logger.error(f"Failed to send email to {to_email} after 3 attempts: {last_error}")
 
 
 async def send_beta_status_email(email: str, status: str):

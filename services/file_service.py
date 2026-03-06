@@ -8,6 +8,7 @@ Now powered by MongoDB via Motor.
 import os
 import uuid
 import json
+import asyncio
 import logging
 import mimetypes
 from typing import List, Optional, Dict, Any, Tuple
@@ -116,8 +117,11 @@ class FileService:
             )
 
         try:
-            result_msg, output_records = await _dispatch_operation(
-                db, operation, files, params, conv_output_dir, conversation_id
+            result_msg, output_records = await asyncio.wait_for(
+                _dispatch_operation(
+                    db, operation, files, params, conv_output_dir, conversation_id
+                ),
+                timeout=120,  # 2 min hard cap per operation
             )
 
             # Mark originals as completed
@@ -126,11 +130,18 @@ class FileService:
 
             return result_msg, output_records
 
+        except asyncio.TimeoutError:
+            for f in files:
+                await db.files.update_one(
+                    {"_id": f.id},
+                    {"$set": {"status": "failed", "error_message": "Operation timed out"}},
+                )
+            raise TimeoutError(f"The {operation} operation took too long and was cancelled.")
         except Exception as e:
             for f in files:
                 await db.files.update_one(
                     {"_id": f.id},
-                    {"$set": {"status": "failed", "error_message": str(e)}},
+                    {"$set": {"status": "failed", "error_message": str(e)[:200]}},
                 )
             raise
 
@@ -437,6 +448,112 @@ async def _dispatch_operation(
             output_records.append(rec)
             results.append(msg)
         return "\n".join(results) or "No document files to convert.", output_records
+
+    # ── New PDF operations ─────────────────────────────────────────
+    elif operation == "watermark_pdf":
+        results = []
+        for f in files:
+            if f.file_type != "pdf":
+                continue
+            out_path = os.path.join(output_dir, f"watermarked_{os.path.basename(f.original_filename)}")
+            msg = await PDFService.watermark_pdf(f.storage_path, out_path, params)
+            rec = await _create_output_record(db, conversation_id, f"watermarked_{f.original_filename}", out_path, "application/pdf", "pdf", operation)
+            output_records.append(rec)
+            results.append(msg)
+        return "\n".join(results) or "No PDFs to watermark.", output_records
+
+    elif operation == "protect_pdf":
+        results = []
+        for f in files:
+            if f.file_type != "pdf":
+                continue
+            out_path = os.path.join(output_dir, f"protected_{os.path.basename(f.original_filename)}")
+            msg = await PDFService.protect_pdf(f.storage_path, out_path, params)
+            rec = await _create_output_record(db, conversation_id, f"protected_{f.original_filename}", out_path, "application/pdf", "pdf", operation)
+            output_records.append(rec)
+            results.append(msg)
+        return "\n".join(results) or "No PDFs to protect.", output_records
+
+    elif operation == "unlock_pdf":
+        results = []
+        for f in files:
+            if f.file_type != "pdf":
+                continue
+            out_path = os.path.join(output_dir, f"unlocked_{os.path.basename(f.original_filename)}")
+            msg = await PDFService.unlock_pdf(f.storage_path, out_path, params)
+            rec = await _create_output_record(db, conversation_id, f"unlocked_{f.original_filename}", out_path, "application/pdf", "pdf", operation)
+            output_records.append(rec)
+            results.append(msg)
+        return "\n".join(results) or "No PDFs to unlock.", output_records
+
+    elif operation == "ocr_pdf":
+        results = []
+        for f in files:
+            if f.file_type != "pdf":
+                continue
+            out_path = os.path.join(output_dir, f"ocr_{os.path.basename(f.original_filename)}")
+            msg = await PDFService.ocr_pdf(f.storage_path, out_path, params)
+            rec = await _create_output_record(db, conversation_id, f"ocr_{f.original_filename}", out_path, "application/pdf", "pdf", operation)
+            output_records.append(rec)
+            results.append(msg)
+        return "\n".join(results) or "No PDFs to OCR.", output_records
+
+    # ── New Image operations ───────────────────────────────────────
+    elif operation == "remove_background":
+        results = []
+        for f in files:
+            if f.file_type != "image":
+                continue
+            out_path = os.path.join(output_dir, f"nobg_{f.id}.png")
+            msg = await ImageService.remove_background(f.storage_path, out_path, params)
+            out_name = f"{os.path.splitext(f.original_filename)[0]}_nobg.png"
+            rec = await _create_output_record(db, conversation_id, out_name, out_path, "image/png", "image", operation)
+            output_records.append(rec)
+            results.append(msg)
+        return "\n".join(results) or "No images to remove background from.", output_records
+
+    # ── Utility operations ──────────────────────────────────────────
+    elif operation == "zip_files":
+        import zipfile as zf_mod
+        zip_name = params.get("filename", "modex_archive.zip")
+        if not zip_name.endswith(".zip"):
+            zip_name += ".zip"
+        out_path = os.path.join(output_dir, zip_name)
+        added = 0
+        seen_names: dict[str, int] = {}
+        with zf_mod.ZipFile(out_path, "w", zf_mod.ZIP_DEFLATED) as zf:
+            for f in files:
+                src = f.output_path if f.output_path and os.path.exists(f.output_path) else f.storage_path
+                if not src or not os.path.exists(src):
+                    continue
+                name = f.original_filename
+                if name in seen_names:
+                    seen_names[name] += 1
+                    base_n, ext_n = os.path.splitext(name)
+                    name = f"{base_n}_{seen_names[name]}{ext_n}"
+                else:
+                    seen_names[name] = 0
+                zf.write(src, arcname=name)
+                added += 1
+        if added == 0:
+            return "No files available to zip.", []
+        rec = await _create_output_record(db, conversation_id, zip_name, out_path, "application/zip", "archive", operation)
+        size_kb = os.path.getsize(out_path) / 1024
+        return f"Created ZIP archive with {added} file(s) ({size_kb:.1f} KB)", [rec]
+
+    # ── New Audio operations ───────────────────────────────────────
+    elif operation == "transcribe_audio":
+        results = []
+        for f in files:
+            if f.file_type != "audio":
+                continue
+            out_path = os.path.join(output_dir, f"transcript_{f.id}.txt")
+            msg = await AudioService.transcribe_audio(f.storage_path, out_path, params)
+            out_name = f"{os.path.splitext(f.original_filename)[0]}_transcript.txt"
+            rec = await _create_output_record(db, conversation_id, out_name, out_path, "text/plain", "document", operation)
+            output_records.append(rec)
+            results.append(msg)
+        return "\n".join(results) or "No audio files to transcribe.", output_records
 
     else:
         return f"Unknown operation: {operation}. Please describe what you'd like me to do with your files.", []

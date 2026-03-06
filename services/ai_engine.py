@@ -7,6 +7,7 @@ OperationDecision that maps directly to our service calls.
 """
 
 import json
+import asyncio
 import logging
 from typing import List, Optional, Dict, Any
 
@@ -16,6 +17,79 @@ from google.genai import types
 from core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# ── Retry / resilience config ─────────────────────────────────────
+
+MAX_RETRIES = 3
+RETRY_DELAYS = [1, 3, 7]  # seconds between retries (exponential-ish)
+AI_TIMEOUT_SECONDS = 60   # hard cap per Gemini call
+
+# Transient errors worth retrying (overloaded, rate-limited, network hiccup)
+# We check exception type first, then fall back to cautious string matching.
+
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+def _is_retryable(error: Exception) -> bool:
+    """Return True if the error looks transient and worth retrying."""
+    # 1. Check for HTTP status code attributes (google-genai, httpx, etc.)
+    status = getattr(error, "status_code", None) or getattr(error, "code", None)
+    if status and int(status) in _RETRYABLE_STATUS_CODES:
+        return True
+    # Also check nested .response.status_code (httpx-style)
+    resp = getattr(error, "response", None)
+    if resp and getattr(resp, "status_code", None) in _RETRYABLE_STATUS_CODES:
+        return True
+
+    # 2. Fall back to string matching only for very specific phrases
+    msg = str(error).lower()
+    _transient_phrases = (
+        "resource exhausted",
+        "rate limit",
+        "overloaded",
+        "service unavailable",
+        "deadline exceeded",
+        "too many requests",
+        "server capacity",
+        "temporarily unavailable",
+    )
+    return any(phrase in msg for phrase in _transient_phrases)
+
+
+_FRIENDLY_ERRORS = {
+    "too many requests": "Modex is getting a lot of requests right now. Please wait a moment and try again.",
+    "service unavailable": "The AI service is temporarily unavailable. Please try again in a few seconds.",
+    "overloaded": "The AI model is currently overloaded. Give it a moment and retry.",
+    "resource exhausted": "We've hit a usage limit. Please wait a minute and try again.",
+    "deadline exceeded": "The request timed out. Please try again.",
+}
+
+
+def _friendly_message(error: Exception) -> str:
+    """Map a raw error to a user-friendly message."""
+    # Check HTTP status code first
+    status = getattr(error, "status_code", None) or getattr(error, "code", None)
+    resp = getattr(error, "response", None)
+    status = status or (getattr(resp, "status_code", None) if resp else None)
+    if status:
+        status = int(status)
+        if status == 429:
+            return "Modex is getting a lot of requests right now. Please wait a moment and try again."
+        if status in (502, 503, 504):
+            return "The AI service is temporarily unavailable. Please try again in a few seconds."
+        if status == 500:
+            return "The AI service hit an internal error. Please try again shortly."
+
+    # Check for timeout types
+    if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
+        return "The request took too long. Try a shorter message or smaller file."
+
+    # Fall back to specific phrase matching
+    msg = str(error).lower()
+    for key, friendly in _FRIENDLY_ERRORS.items():
+        if key in msg:
+            return friendly
+    return "Something went wrong on our end. Please try again in a moment."
 
 # ── Gemini client (singleton) ─────────────────────────────────────
 
@@ -47,18 +121,24 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 - pdf_pages_to_images: Render full PDF pages as images (text + charts + everything). params → { format?: "png"|"jpg", dpi?: 200, pages?: [1,2] }
 - extract_pdf_images: Extract embedded images (photos, charts, diagrams) from within a PDF. params → { format?: "png"|"jpg", min_size?: 50 }
 - images_to_pdf: (requires image files) params → {}
+- watermark_pdf: Add text watermark to PDF pages. params → { text?: "CONFIDENTIAL", opacity?: 0.15, angle?: 45, font_size?: 60 }
+- protect_pdf: Password-protect a PDF. params → { password: "mypassword", owner_password?: "optional" }
+- unlock_pdf: Remove password from a protected PDF. params → { password: "current_password" }
+- ocr_pdf: OCR a scanned PDF to make it searchable. params → { language?: "eng", dpi?: 300 }
 
 ### Image Operations
 - compress_image: params → { target_size_kb?, quality?: 1-100, format? }
 - resize_image: params → { width?, height?, scale?, maintain_aspect?: true }
 - crop_image: params → { left, top, right, bottom } or { x, y, width, height }
 - convert_image: params → { format: "png"|"jpg"|"webp"|"bmp"|"tiff"|"gif", quality?: 1-100 }
+- remove_background: Remove image background (AI-powered, outputs PNG). params → {}
 
 ### Audio Operations
 - compress_audio: params → { target_size_kb?, bitrate?: "128k"|"64k", format?: "mp3" }
 - convert_audio: params → { format: "mp3"|"wav"|"ogg"|"flac"|"aac"|"m4a", bitrate?: "192k" }
 - trim_audio: params → { start_sec?, end_sec?, start_ms?, end_ms? }
 - adjust_audio_volume: params → { change_db?: float, normalize?: bool }
+- transcribe_audio: Transcribe audio to text. params → { language?: "auto", timestamps?: false }
 
 ### Document Operations
 - document_to_pdf: (for txt, md, csv, json, html, xml, rtf, log files) params → {}
@@ -69,6 +149,9 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 - extract_text: Extract all text from a PDF or document and return it. params → {}
 - describe_image: Describe what is in an image. params → { detail?: "brief"|"detailed" }
 
+### Utility Operations
+- zip_files: Bundle uploaded files into a single ZIP archive for download. params → { filename?: "archive.zip" }
+
 ### General
 - chat: For general questions, greetings, or conversations that don't involve file operations. params → {}
 
@@ -78,12 +161,6 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 3. Set file_ids to the IDs of files provided in context. If not clear, use all uploaded files.
 4. If the request is ambiguous or you need more info, set needs_clarification=true and put your question in explanation.
 5. If no matching operation exists, set operation="unknown" and explain in explanation.
-14. For "summarize", "what does this say", "tell me about this file", "explain this document" → use summarize.
-15. For specific questions about file content ("what is the revenue?", "how many pages?", "who is the author?") → use answer_about_content with the user's question in params.
-16. For "extract text", "get text from PDF", "copy all text" → use extract_text.
-17. For "describe this image", "what's in this picture" → use describe_image.
-18. For greetings, general knowledge questions, or any request that doesn't require file processing → use chat. Put your full conversational response in the explanation field.
-19. Content analysis operations (summarize, answer_about_content, extract_text, describe_image) CAN be part of a multi_operation chain alongside file operations. They will be handled correctly.
 6. Be smart about unit conversions: "100kb" = 100, "1mb" = 1024, "500 bytes" = 0.5.
 7. For "make it smaller" type requests without a specific target, use quality-based compression.
 8. Always populate the explanation field with a brief human-readable summary of what you'll do.
@@ -92,6 +169,20 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 11. The older pdf_to_images is a legacy alias — prefer pdf_pages_to_images for full-page renders and extract_pdf_images for embedded content.
 12. **Multi-operations**: If the user requests MULTIPLE operations (e.g. "compress and convert to png", "resize to 800px wide and convert to webp"), populate the `operations` array with each step in order. Each step has its own operation, file_ids, and params. The main `operation` field should be set to "multi_operation" and `params` should be empty.
 13. For single operations, leave `operations` as an empty array and use `operation`/`params` as before.
+14. For "summarize", "what does this say", "tell me about this file", "explain this document" → use summarize.
+15. For specific questions about file content ("what is the revenue?", "how many pages?", "who is the author?") → use answer_about_content with the user's question in params.
+16. For "extract text", "get text from PDF", "copy all text" → use extract_text.
+17. For "describe this image", "what's in this picture" → use describe_image.
+18. For greetings, general knowledge questions, or any request that doesn't require file processing → use chat. Put your full conversational response in the explanation field.
+19. Content analysis operations (summarize, answer_about_content, extract_text, describe_image) CAN be part of a multi_operation chain alongside file operations. They will be handled correctly.
+20. For "add watermark", "stamp", "mark as confidential/draft" → use watermark_pdf.
+21. For "password protect", "encrypt PDF", "lock PDF" → use protect_pdf. Ask for the desired password if not provided.
+22. For "unlock PDF", "remove password", "decrypt PDF" → use unlock_pdf. Ask for the current password if not provided.
+23. For "OCR", "make searchable", "scan to text" on a PDF → use ocr_pdf.
+24. For "remove background", "cut out background", "transparent background" on an image → use remove_background.
+25. For "transcribe", "speech to text", "what does this audio say" → use transcribe_audio.
+26. For "zip", "zip it", "zip these files", "create a zip", "bundle", "archive", "make a zip", "download as zip", "zip all files" → use zip_files. Do NOT confuse with compress — "zip" means create a ZIP archive, "compress" means reduce file size.
+27. CRITICAL DISAMBIGUATION: "compress" / "reduce size" / "make smaller" / "shrink" → compress_pdf / compress_image / compress_audio (reduces quality/size). "zip" / "archive" / "bundle" / "zip it" → zip_files (creates a .zip container). Never mix these up.
 """
 
 # ── JSON schema for structured output ─────────────────────────────
@@ -189,32 +280,64 @@ async def interpret_request(
         )
     )
 
-    try:
-        response = client.models.generate_content(
-            model=settings.AI_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                response_mime_type="application/json",
-                response_json_schema=OPERATION_SCHEMA,
-                temperature=0.1,  # Low temp for deterministic operations
-                max_output_tokens=settings.AI_MAX_TOKENS,
-            ),
-        )
+    last_error: Optional[Exception] = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model=settings.AI_MODEL,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_INSTRUCTION,
+                        response_mime_type="application/json",
+                        response_json_schema=OPERATION_SCHEMA,
+                        temperature=0.1,
+                        max_output_tokens=settings.AI_MAX_TOKENS,
+                    ),
+                ),
+                timeout=AI_TIMEOUT_SECONDS,
+            )
 
-        result = json.loads(response.text)
-        logger.info(f"AI decision: {result['operation']} — {result['explanation']}")
-        return result
+            if not response.text:
+                raise ValueError("Empty response from AI model")
 
-    except Exception as e:
-        logger.error(f"Gemini API error: {e}")
-        return {
-            "operation": "unknown",
-            "file_ids": [],
-            "params": {},
-            "explanation": f"I encountered an error processing your request: {str(e)}. Please try rephrasing.",
-            "needs_clarification": True,
-        }
+            result = json.loads(response.text)
+            logger.info(f"AI decision: {result['operation']} — {result['explanation']}")
+            return result
+
+        except asyncio.TimeoutError:
+            last_error = TimeoutError("AI request timed out")
+            logger.warning(f"Gemini timeout on attempt {attempt + 1}/{MAX_RETRIES}")
+        except json.JSONDecodeError as e:
+            # Bad JSON is not retryable — return a safe fallback immediately
+            logger.error(f"Gemini returned invalid JSON: {e}")
+            return {
+                "operation": "unknown",
+                "file_ids": [],
+                "params": {},
+                "explanation": "I had trouble understanding the response. Could you rephrase your request?",
+                "needs_clarification": True,
+            }
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Gemini API error (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
+            if not _is_retryable(e):
+                break  # non-transient → don't retry
+
+        if attempt < MAX_RETRIES - 1:
+            await asyncio.sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
+
+    # All retries exhausted
+    friendly = _friendly_message(last_error) if last_error else "Something went wrong. Please try again."
+    logger.error(f"Gemini API failed after {MAX_RETRIES} attempts: {last_error}")
+    return {
+        "operation": "unknown",
+        "file_ids": [],
+        "params": {},
+        "explanation": friendly,
+        "needs_clarification": True,
+    }
 
 
 # ── Content analysis operations ─────────────────────────────────
@@ -317,20 +440,38 @@ async def analyze_file_content(
             content_parts.append(p)
     content_parts.append(types.Part.from_text(text=f"\n\nTask: {task}"))
 
-    try:
-        response = client.models.generate_content(
-            model=settings.AI_MODEL,
-            contents=[types.Content(role="user", parts=content_parts)],
-            config=types.GenerateContentConfig(
-                system_instruction="You are Modex, an AI file-processing assistant. The user has asked you to analyse their file content. Respond directly, clearly, and helpfully. Use markdown formatting.",
-                temperature=0.3,
-                max_output_tokens=settings.AI_MAX_TOKENS,
-            ),
-        )
-        return response.text or "I could not generate a response for this content."
-    except Exception as e:
-        logger.error(f"Content analysis error: {e}")
-        return f"I encountered an error analysing the file: {str(e)}"
+    last_error: Optional[Exception] = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model=settings.AI_MODEL,
+                    contents=[types.Content(role="user", parts=content_parts)],
+                    config=types.GenerateContentConfig(
+                        system_instruction="You are Modex, an AI file-processing assistant. The user has asked you to analyse their file content. Respond directly, clearly, and helpfully. Use markdown formatting.",
+                        temperature=0.3,
+                        max_output_tokens=settings.AI_MAX_TOKENS,
+                    ),
+                ),
+                timeout=AI_TIMEOUT_SECONDS,
+            )
+            return response.text or "I could not generate a response for this content."
+        except asyncio.TimeoutError:
+            last_error = TimeoutError("Content analysis timed out")
+            logger.warning(f"Content analysis timeout (attempt {attempt + 1}/{MAX_RETRIES})")
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Content analysis error (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
+            if not _is_retryable(e):
+                break
+
+        if attempt < MAX_RETRIES - 1:
+            await asyncio.sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
+
+    friendly = _friendly_message(last_error) if last_error else "Something went wrong during analysis."
+    logger.error(f"Content analysis failed after {MAX_RETRIES} attempts: {last_error}")
+    return friendly
 
 
 async def general_chat(
@@ -352,17 +493,35 @@ async def general_chat(
         types.Content(role="user", parts=[types.Part.from_text(text=user_message)])
     )
 
-    try:
-        response = client.models.generate_content(
-            model=settings.AI_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction="You are Modex, a friendly and knowledgeable AI assistant. You specialise in file processing (PDFs, images, audio) but can also answer general questions helpfully. Respond clearly using markdown formatting. Be concise but thorough.",
-                temperature=0.7,
-                max_output_tokens=settings.AI_MAX_TOKENS,
-            ),
-        )
-        return response.text or "I'm not sure how to respond to that."
-    except Exception as e:
-        logger.error(f"General chat error: {e}")
-        return f"I encountered an error: {str(e)}"
+    last_error: Optional[Exception] = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model=settings.AI_MODEL,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction="You are Modex, a friendly and knowledgeable AI assistant. You specialise in file processing (PDFs, images, audio) but can also answer general questions helpfully. Respond clearly using markdown formatting. Be concise but thorough.",
+                        temperature=0.7,
+                        max_output_tokens=settings.AI_MAX_TOKENS,
+                    ),
+                ),
+                timeout=AI_TIMEOUT_SECONDS,
+            )
+            return response.text or "I'm not sure how to respond to that."
+        except asyncio.TimeoutError:
+            last_error = TimeoutError("Chat response timed out")
+            logger.warning(f"General chat timeout (attempt {attempt + 1}/{MAX_RETRIES})")
+        except Exception as e:
+            last_error = e
+            logger.warning(f"General chat error (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
+            if not _is_retryable(e):
+                break
+
+        if attempt < MAX_RETRIES - 1:
+            await asyncio.sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
+
+    friendly = _friendly_message(last_error) if last_error else "Something went wrong."
+    logger.error(f"General chat failed after {MAX_RETRIES} attempts: {last_error}")
+    return friendly

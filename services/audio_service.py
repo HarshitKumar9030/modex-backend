@@ -6,6 +6,7 @@ Operations:
   - convert_audio        : Convert between formats (mp3, wav, ogg, flac, aac, m4a)
   - trim_audio           : Trim audio to a time range
   - adjust_audio_volume  : Increase or decrease volume
+  - transcribe_audio     : Transcribe audio to text using Gemini
 """
 
 import os
@@ -177,3 +178,77 @@ class AudioService:
         except Exception as e:
             logger.error(f"Audio volume adjust failed: {e}")
             raise ValueError(f"Failed to adjust audio volume: {e}")
+
+    # ── Transcribe ────────────────────────────────────────────────
+
+    @staticmethod
+    async def transcribe_audio(input_path: str, output_path: str, params: Dict[str, Any]) -> str:
+        """
+        Transcribe audio to text using Gemini multimodal. Params:
+          - language (str, optional): hint language, default "auto"
+          - timestamps (bool, optional): include timestamps, default False
+        Saves transcript to a .txt file and returns the text.
+        """
+        import asyncio
+        from google import genai
+        from core.config import settings
+
+        language = params.get("language", "auto")
+        timestamps = params.get("timestamps", False)
+
+        try:
+            # Read audio file bytes
+            with open(input_path, "rb") as f:
+                audio_bytes = f.read()
+
+            ext = os.path.splitext(input_path)[1].lstrip(".").lower()
+            mime_map = {
+                "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg",
+                "flac": "audio/flac", "aac": "audio/aac", "m4a": "audio/mp4",
+            }
+            mime_type = mime_map.get(ext, "audio/mpeg")
+
+            prompt = "Transcribe this audio recording accurately. Return only the transcription text."
+            if language != "auto":
+                prompt += f" The audio is in {language}."
+            if timestamps:
+                prompt += " Include timestamps at the start of each segment in [MM:SS] format."
+
+            client = genai.Client(api_key=settings.GEMINI_API_KEY)
+
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model="gemini-2.5-flash",
+                    contents=[
+                        {
+                            "parts": [
+                                {"inline_data": {"mime_type": mime_type, "data": audio_bytes}},
+                                {"text": prompt},
+                            ]
+                        }
+                    ],
+                ),
+                timeout=120,
+            )
+
+            transcript = response.text.strip() if response.text else ""
+            if not transcript:
+                raise ValueError("Gemini returned an empty transcription")
+
+            # Save transcript to file
+            base = os.path.splitext(output_path)[0]
+            txt_path = f"{base}.txt"
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(transcript)
+
+            word_count = len(transcript.split())
+            return f"Transcribed audio — {word_count} words saved to text file"
+
+        except ImportError:
+            raise ValueError("Transcription is not available — google-genai is not installed")
+        except TimeoutError:
+            raise ValueError("Transcription timed out — the audio file may be too long")
+        except Exception as e:
+            logger.error(f"Audio transcription failed: {e}")
+            raise ValueError(f"Failed to transcribe audio: {e}")

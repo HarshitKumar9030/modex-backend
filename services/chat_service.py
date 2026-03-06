@@ -9,6 +9,7 @@ Now powered by MongoDB via Motor.
 """
 
 import json
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
@@ -21,6 +22,25 @@ from services.ai_engine import interpret_request, analyze_file_content, general_
 from services.file_service import FileService
 
 logger = logging.getLogger(__name__)
+
+# Overall timeout for the full send_message pipeline (AI interpretation + all processing)
+MESSAGE_PIPELINE_TIMEOUT = 180  # seconds
+
+
+def _safe_error_msg(error: Exception, context: str = "processing your request") -> str:
+    """Return a user-friendly error message without leaking internals."""
+    msg = str(error).lower()
+    if any(tok in msg for tok in ("timeout", "deadline", "timed out")):
+        return f"The operation timed out while {context}. Please try again with a smaller file or simpler request."
+    if any(tok in msg for tok in ("429", "rate limit", "resource exhausted", "overloaded")):
+        return f"Modex is under heavy load right now. Please wait a moment and try again."
+    if "no files" in msg or "not found" in msg:
+        return f"I couldn't find the files needed for this operation. Please make sure your files are uploaded."
+    if "unsupported" in msg or "unknown operation" in msg:
+        return f"I don't support that operation yet. Try describing what you'd like differently."
+    # Generic fallback — never expose raw traceback/error strings
+    logger.error(f"Unhandled error during {context}: {error}")
+    return f"Something went wrong while {context}. Please try again — if the problem persists, try a different approach."
 
 
 class ChatService:
@@ -152,22 +172,30 @@ class ChatService:
                 user_message=user_message,
             )
         elif decision["operation"] == "multi_operation" and decision.get("operations"):
-            # Chained multi-operation: run each step sequentially
-            try:
-                all_results = []
-                all_output_records = []
-                for step in decision["operations"]:
-                    step_op = step["operation"]
-                    step_file_ids = step.get("file_ids", decision.get("file_ids", []))
-                    step_params = step.get("params", {})
+            # Chained multi-operation: run each step sequentially with per-step error isolation
+            MAX_CHAIN_STEPS = 10
+            steps = decision["operations"][:MAX_CHAIN_STEPS]
+            if len(decision["operations"]) > MAX_CHAIN_STEPS:
+                logger.warning(f"Multi-op chain truncated from {len(decision['operations'])} to {MAX_CHAIN_STEPS} steps")
 
-                    # Content analysis steps are handled by analyze_file_content, not FileService
+            all_results = []
+            all_output_records: List[FileDoc] = []
+            failed_steps = 0
+            # Track the latest output IDs so subsequent steps can consume them
+            latest_output_ids: List[str] = []
+
+            for step_idx, step in enumerate(steps):
+                step_op = step["operation"]
+                # Use explicitly set file_ids (from AI or from previous step forwarding),
+                # fall back to the top-level decision file_ids (user's original uploads)
+                step_file_ids = step.get("file_ids") or decision.get("file_ids", [])
+                step_params = step.get("params", {})
+
+                try:
+                    # Content analysis steps always run against original uploads
                     if step_op in CONTENT_OPERATIONS:
-                        # Content ops should read original source files, not outputs from previous steps
-                        # Re-fetch conversation files to include any newly created files
                         current_files = await FileService.get_conversation_files(db, conversation_id)
                         analysis_files = []
-                        # Always prefer top-level file_ids (the user's uploads) for content analysis
                         target_ids = decision.get("file_ids", [])
                         for f in current_files:
                             if not target_ids or f.id in target_ids:
@@ -194,22 +222,36 @@ class ChatService:
                         conversation_id=conversation_id,
                     )
                     all_results.append(f"**{step_op}:** {result_msg}")
-                    # Only keep output from the final file-producing step to avoid duplicates
+
+                    # Accumulate all output records for the final response
                     if output_records:
-                        all_output_records = output_records
-                    # For chained ops, feed output file IDs as input to next step
-                    # but only if the next step is a file-processing op, not a content analysis op
-                    if output_records:
-                        next_ids = [r.id for r in output_records]
-                        step_idx = decision["operations"].index(step)
-                        if step_idx + 1 < len(decision["operations"]):
-                            next_step = decision["operations"][step_idx + 1]
-                            if next_step["operation"] not in CONTENT_OPERATIONS:
-                                next_step["file_ids"] = next_ids
-                assistant_content = f"{decision['explanation']}\n\n" + "\n\n".join(all_results)
-                processed_files = all_output_records
-            except Exception as e:
-                assistant_content = f"I tried to run multiple operations, but encountered an error: {str(e)}"
+                        all_output_records.extend(output_records)
+                        latest_output_ids = [r.id for r in output_records]
+
+                    # Forward output file IDs to the NEXT file-processing step
+                    # so it consumes the output of this step as its input
+                    if latest_output_ids and step_idx + 1 < len(steps):
+                        next_step = steps[step_idx + 1]
+                        if next_step["operation"] not in CONTENT_OPERATIONS:
+                            next_step["file_ids"] = latest_output_ids
+
+                except Exception as step_error:
+                    failed_steps += 1
+                    logger.error(f"Multi-op step '{step_op}' failed: {step_error}")
+                    all_results.append(f"**{step_op}:** ⚠️ {_safe_error_msg(step_error, step_op)}")
+                    # Don't clear latest_output_ids — let the next step try with whatever was last produced
+
+            assistant_content = f"{decision['explanation']}\n\n" + "\n\n".join(all_results)
+            if failed_steps == len(steps):
+                assistant_content = "All operations failed. Please try again — if the problem persists, try processing files one at a time."
+            # Deduplicate output records by ID
+            seen_ids: set[str] = set()
+            deduped: List[FileDoc] = []
+            for rec in all_output_records:
+                if rec.id not in seen_ids:
+                    seen_ids.add(rec.id)
+                    deduped.append(rec)
+            processed_files = deduped
         elif decision["operation"] != "unknown":
             try:
                 result_msg, output_records = await FileService.process_operation(
@@ -222,7 +264,7 @@ class ChatService:
                 assistant_content = f"{decision['explanation']}\n\n**Result:** {result_msg}"
                 processed_files = output_records
             except Exception as e:
-                assistant_content = f"I tried to {decision['explanation'].lower()}, but encountered an error: {str(e)}"
+                assistant_content = _safe_error_msg(e, decision['explanation'].lower())
 
         # Save assistant message
         assistant_msg = MessageDoc(

@@ -1,10 +1,14 @@
-﻿"""
+"""
 Conversation & Chat API routes - MongoDB edition.
 """
 
+import asyncio
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Header
 from motor.motor_asyncio import AsyncIOMotorDatabase
+
+logger = logging.getLogger(__name__)
 
 from core.database import get_db
 from models.api_models import (
@@ -121,12 +125,24 @@ async def send_chat_message(
     if not convo:
         raise HTTPException(404, "Conversation not found")
 
-    result = await ChatService.send_message(
-        db=db,
-        conversation_id=conversation_id,
-        user_message=body.message,
-        file_ids=body.file_ids,
-    )
+    try:
+        result = await asyncio.wait_for(
+            ChatService.send_message(
+                db=db,
+                conversation_id=conversation_id,
+                user_message=body.message,
+                file_ids=body.file_ids,
+            ),
+            timeout=180,  # 3 min hard limit for entire pipeline
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"Chat pipeline timed out for conversation {conversation_id}")
+        raise HTTPException(504, "Your request took too long to process. Please try again with a simpler request or smaller files.")
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in chat pipeline: {e}")
+        raise HTTPException(500, "Something went wrong processing your request. Please try again.")
 
     processed = [_file_out(f) for f in result.get("processed_files", [])]
     msg = result["message"]
