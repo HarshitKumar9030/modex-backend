@@ -19,6 +19,14 @@ from services.chat_service import ChatService
 router = APIRouter(prefix="/conversations/{conversation_id}/files", tags=["Files"])
 
 
+def _is_valid_pdf_file(path: str) -> bool:
+    try:
+        with open(path, "rb") as file_handle:
+            return file_handle.read(5) == b"%PDF-"
+    except OSError:
+        return False
+
+
 def _get_user_id(x_user_id: Optional[str] = Header(None)) -> str:
     return x_user_id or ""
 
@@ -151,6 +159,9 @@ async def download_output(
 
     if not record.output_path or not os.path.exists(record.output_path):
         raise HTTPException(404, "No output file available. Was a processing operation run?")
+
+    if record.mime_type == "application/pdf" and not _is_valid_pdf_file(record.output_path):
+        raise HTTPException(422, "The generated PDF file is invalid. Please regenerate it.")
 
     await FileService.mark_exported(db, file_id)
 

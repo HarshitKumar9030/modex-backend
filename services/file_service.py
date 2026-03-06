@@ -22,6 +22,8 @@ from models.schemas import FileDoc, FileStatus
 from services.pdf_service import PDFService
 from services.image_service import ImageService
 from services.audio_service import AudioService
+from services.study_service import StudyService
+from services.diagram_service import DiagramService
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +105,30 @@ class FileService:
         if not files:
             files = await FileService.get_conversation_files(db, conversation_id)
 
-        if not files:
+        # Operations that can work without uploaded files (generative)
+        _GENERATIVE_OPS = {
+            "generate_latex_pdf", "generate_study_pack", "generate_study_schedule",
+            "generate_formula_sheet", "generate_revision_notes", "generate_practice_questions",
+            "generate_flashcards", "generate_worksheet", "generate_exam",
+            "generate_from_template", "generate_diagram",
+        }
+
+        # Normalize common AI operation name variants
+        _OP_ALIASES = {
+            "draw_diagram": "generate_diagram", "create_diagram": "generate_diagram",
+            "vector_diagram": "generate_diagram", "plot_diagram": "generate_diagram",
+            "make_diagram": "generate_diagram", "draw_vectors": "generate_diagram",
+            "create_study_pack": "generate_study_pack", "make_study_pack": "generate_study_pack",
+            "create_worksheet": "generate_worksheet", "make_worksheet": "generate_worksheet",
+            "create_exam": "generate_exam", "make_exam": "generate_exam",
+            "create_flashcards": "generate_flashcards", "make_flashcards": "generate_flashcards",
+            "create_formula_sheet": "generate_formula_sheet",
+            "create_revision_notes": "generate_revision_notes",
+            "create_latex_pdf": "generate_latex_pdf", "latex_pdf": "generate_latex_pdf",
+        }
+        operation = _OP_ALIASES.get(operation, operation)
+
+        if not files and operation not in _GENERATIVE_OPS:
             return "No files found to process. Please upload files first.", []
 
         conv_output_dir = os.path.join(settings.OUTPUT_DIR, conversation_id)
@@ -117,11 +142,12 @@ class FileService:
             )
 
         try:
+            timeout = 180 if operation in _GENERATIVE_OPS else 120
             result_msg, output_records = await asyncio.wait_for(
                 _dispatch_operation(
                     db, operation, files, params, conv_output_dir, conversation_id
                 ),
-                timeout=120,  # 2 min hard cap per operation
+                timeout=timeout,
             )
 
             # Mark originals as completed
@@ -196,6 +222,15 @@ async def _create_output_record(
     return rec
 
 
+def _is_pdf_like(file_doc: FileDoc) -> bool:
+    """Treat legacy generated PDFs as PDFs based on mime type or extension."""
+    if file_doc.file_type == "pdf":
+        return True
+    if file_doc.mime_type == "application/pdf":
+        return True
+    return file_doc.original_filename.lower().endswith(".pdf")
+
+
 async def _dispatch_operation(
     db: AsyncIOMotorDatabase,
     operation: str,
@@ -212,7 +247,7 @@ async def _dispatch_operation(
     if operation == "compress_pdf":
         results = []
         for f in files:
-            if f.file_type != "pdf":
+            if not _is_pdf_like(f):
                 continue
             out_path = os.path.join(output_dir, f"compressed_{os.path.basename(f.original_filename)}")
             msg = await PDFService.compress_pdf(f.storage_path, out_path, params)
@@ -223,7 +258,7 @@ async def _dispatch_operation(
         return "\n".join(results) or "No PDFs to compress.", output_records
 
     elif operation == "merge_pdf":
-        pdf_files = [f for f in files if f.file_type == "pdf"]
+        pdf_files = [f for f in files if _is_pdf_like(f)]
         if len(pdf_files) < 2:
             return "Need at least 2 PDFs to merge.", []
         out_path = os.path.join(output_dir, "merged.pdf")
@@ -234,7 +269,7 @@ async def _dispatch_operation(
     elif operation == "split_pdf":
         results = []
         for f in files:
-            if f.file_type != "pdf":
+            if not _is_pdf_like(f):
                 continue
             paths = await PDFService.split_pdf(f.storage_path, output_dir, params)
             for p in paths:
@@ -249,7 +284,7 @@ async def _dispatch_operation(
     elif operation == "rotate_pdf":
         results = []
         for f in files:
-            if f.file_type != "pdf":
+            if not _is_pdf_like(f):
                 continue
             out_path = os.path.join(output_dir, f"rotated_{os.path.basename(f.original_filename)}")
             msg = await PDFService.rotate_pdf(f.storage_path, out_path, params)
@@ -262,7 +297,7 @@ async def _dispatch_operation(
     elif operation == "pdf_to_images":
         results = []
         for f in files:
-            if f.file_type != "pdf":
+            if not _is_pdf_like(f):
                 continue
             paths = await PDFService.pdf_to_images(f.storage_path, output_dir, params)
             for p in paths:
@@ -278,7 +313,7 @@ async def _dispatch_operation(
     elif operation == "pdf_pages_to_images":
         results = []
         for f in files:
-            if f.file_type != "pdf":
+            if not _is_pdf_like(f):
                 continue
             paths = await PDFService.pdf_pages_to_images(f.storage_path, output_dir, params)
             for p in paths:
@@ -294,7 +329,7 @@ async def _dispatch_operation(
     elif operation == "extract_pdf_images":
         results = []
         for f in files:
-            if f.file_type != "pdf":
+            if not _is_pdf_like(f):
                 continue
             paths = await PDFService.extract_pdf_images(f.storage_path, output_dir, params)
             for p in paths:
@@ -453,7 +488,7 @@ async def _dispatch_operation(
     elif operation == "watermark_pdf":
         results = []
         for f in files:
-            if f.file_type != "pdf":
+            if not _is_pdf_like(f):
                 continue
             out_path = os.path.join(output_dir, f"watermarked_{os.path.basename(f.original_filename)}")
             msg = await PDFService.watermark_pdf(f.storage_path, out_path, params)
@@ -465,7 +500,7 @@ async def _dispatch_operation(
     elif operation == "protect_pdf":
         results = []
         for f in files:
-            if f.file_type != "pdf":
+            if not _is_pdf_like(f):
                 continue
             out_path = os.path.join(output_dir, f"protected_{os.path.basename(f.original_filename)}")
             msg = await PDFService.protect_pdf(f.storage_path, out_path, params)
@@ -477,7 +512,7 @@ async def _dispatch_operation(
     elif operation == "unlock_pdf":
         results = []
         for f in files:
-            if f.file_type != "pdf":
+            if not _is_pdf_like(f):
                 continue
             out_path = os.path.join(output_dir, f"unlocked_{os.path.basename(f.original_filename)}")
             msg = await PDFService.unlock_pdf(f.storage_path, out_path, params)
@@ -489,7 +524,7 @@ async def _dispatch_operation(
     elif operation == "ocr_pdf":
         results = []
         for f in files:
-            if f.file_type != "pdf":
+            if not _is_pdf_like(f):
                 continue
             out_path = os.path.join(output_dir, f"ocr_{os.path.basename(f.original_filename)}")
             msg = await PDFService.ocr_pdf(f.storage_path, out_path, params)
@@ -574,6 +609,184 @@ async def _dispatch_operation(
             output_records.append(rec)
             results.append(msg)
         return "\n".join(results) or "No audio files to transcribe.", output_records
+
+    # ── Study & Education Operations ──────────────────────────────
+    elif operation == "generate_study_pack":
+        filename = params.get("filename", "study_pack.pdf")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+        out_path = os.path.join(output_dir, filename)
+        msg = await StudyService.generate_study_pack(out_path, params)
+        rec = await _create_output_record(db, conversation_id, filename, out_path, "application/pdf", "document", operation)
+        return msg, [rec]
+
+    elif operation == "generate_study_schedule":
+        filename = params.get("filename", "study_schedule.pdf")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+        out_path = os.path.join(output_dir, filename)
+        msg = await StudyService.generate_study_schedule(out_path, params)
+        rec = await _create_output_record(db, conversation_id, filename, out_path, "application/pdf", "document", operation)
+        return msg, [rec]
+
+    elif operation == "generate_formula_sheet":
+        filename = params.get("filename", "formula_sheet.pdf")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+        out_path = os.path.join(output_dir, filename)
+        msg = await StudyService.generate_formula_sheet(out_path, params)
+        rec = await _create_output_record(db, conversation_id, filename, out_path, "application/pdf", "document", operation)
+        return msg, [rec]
+
+    elif operation == "generate_revision_notes":
+        filename = params.get("filename", "revision_notes.pdf")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+        out_path = os.path.join(output_dir, filename)
+        source_text = ""
+        for f in files:
+            try:
+                if f.file_type == "pdf":
+                    from PyPDF2 import PdfReader
+                    reader = PdfReader(f.storage_path)
+                    for page in reader.pages[:20]:
+                        source_text += (page.extract_text() or "") + "\n"
+                elif f.file_type == "document":
+                    with open(f.storage_path, "r", encoding="utf-8", errors="replace") as fh:
+                        source_text += fh.read(8000) + "\n"
+            except Exception:
+                pass
+        msg = await StudyService.generate_revision_notes(out_path, params, source_text)
+        rec = await _create_output_record(db, conversation_id, filename, out_path, "application/pdf", "document", operation)
+        return msg, [rec]
+
+    elif operation == "generate_practice_questions":
+        filename = params.get("filename", "practice_questions.pdf")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+        out_path = os.path.join(output_dir, filename)
+        msg = await StudyService.generate_practice_questions(out_path, params)
+        rec = await _create_output_record(db, conversation_id, filename, out_path, "application/pdf", "document", operation)
+        return msg, [rec]
+
+    elif operation == "generate_flashcards":
+        filename = params.get("filename", "flashcards.pdf")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+        out_path = os.path.join(output_dir, filename)
+        msg = await StudyService.generate_flashcards(out_path, params)
+        rec = await _create_output_record(db, conversation_id, filename, out_path, "application/pdf", "document", operation)
+        return msg, [rec]
+
+    elif operation == "generate_worksheet":
+        filename = params.get("filename", "worksheet.pdf")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+        out_path = os.path.join(output_dir, filename)
+        msg = await StudyService.generate_worksheet(out_path, params)
+        rec = await _create_output_record(db, conversation_id, filename, out_path, "application/pdf", "document", operation)
+        return msg, [rec]
+
+    elif operation == "generate_exam":
+        filename = params.get("filename", "exam_paper.pdf")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+        out_path = os.path.join(output_dir, filename)
+        msg = await StudyService.generate_exam(out_path, params)
+        rec = await _create_output_record(db, conversation_id, filename, out_path, "application/pdf", "document", operation)
+        return msg, [rec]
+
+    elif operation == "cleanup_notes":
+        source_text = ""
+        for f in files:
+            try:
+                if f.file_type == "pdf":
+                    from PyPDF2 import PdfReader
+                    reader = PdfReader(f.storage_path)
+                    for page in reader.pages[:30]:
+                        source_text += (page.extract_text() or "") + "\n"
+                elif f.file_type == "document":
+                    with open(f.storage_path, "r", encoding="utf-8", errors="replace") as fh:
+                        source_text += fh.read(15000) + "\n"
+            except Exception:
+                pass
+        if not source_text.strip():
+            return "No readable content found in uploaded files.", []
+        filename = params.get("filename", "cleaned_notes.pdf")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+        out_path = os.path.join(output_dir, filename)
+        msg = await StudyService.cleanup_notes(out_path, params, source_text)
+        rec = await _create_output_record(db, conversation_id, filename, out_path, "application/pdf", "document", operation)
+        return msg, [rec]
+
+    elif operation == "generate_from_template":
+        filename = params.get("filename", "document.pdf")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+        out_path = os.path.join(output_dir, filename)
+        msg = await StudyService.generate_from_template(out_path, params)
+        rec = await _create_output_record(db, conversation_id, filename, out_path, "application/pdf", "document", operation)
+        return msg, [rec]
+
+    # ── Formula OCR ───────────────────────────────────────────────
+    elif operation == "formula_ocr":
+        image_files = [f for f in files if f.file_type == "image"]
+        if not image_files:
+            return "Please upload an image containing formulas.", []
+        results = []
+        for f in image_files:
+            filename = f"formulas_{f.id}.pdf"
+            out_path = os.path.join(output_dir, filename)
+            msg = await StudyService.formula_ocr(f.storage_path, out_path, params)
+            rec = await _create_output_record(db, conversation_id, filename, out_path, "application/pdf", "document", operation)
+            output_records.append(rec)
+            results.append(msg)
+        return "\n".join(results), output_records
+
+    # ── Multi-File Synthesis ──────────────────────────────────────
+    elif operation == "synthesize_files":
+        if len(files) < 1:
+            return "Please upload files to synthesize.", []
+        file_infos = [{"path": f.storage_path, "filename": f.original_filename, "type": f.file_type} for f in files]
+        filename = params.get("filename", "synthesized.pdf")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+        out_path = os.path.join(output_dir, filename)
+        msg = await StudyService.synthesize_files(file_infos, out_path, params)
+        rec = await _create_output_record(db, conversation_id, filename, out_path, "application/pdf", "document", operation)
+        return msg, [rec]
+
+    # ── Diagram Generation ────────────────────────────────────────
+    elif operation == "generate_diagram":
+        requested_filename = str(params.get("filename", "")).strip()
+        requested_format = params.get("output_format")
+        if requested_format is None and requested_filename.lower().endswith(".pdf"):
+            output_format = "png"
+        else:
+            output_format = str(requested_format or "png").lower()
+        if output_format in {"jpeg", "jpg"}:
+            default_name = "diagram.jpg"
+            mime_type = "image/jpeg"
+            file_type = "image"
+        elif output_format == "pdf":
+            default_name = "diagram.pdf"
+            mime_type = "application/pdf"
+            file_type = "pdf"
+        else:
+            default_name = "diagram.png"
+            mime_type = "image/png"
+            file_type = "image"
+
+        filename = requested_filename or default_name
+        if output_format != "pdf" and filename.lower().endswith(".pdf"):
+            filename = os.path.splitext(filename)[0] + (".jpg" if output_format in {"jpeg", "jpg"} else ".png")
+        if "." not in os.path.basename(filename):
+            filename = default_name
+        out_path = os.path.join(output_dir, filename)
+        msg = await DiagramService.generate_diagram(out_path, params)
+        rec = await _create_output_record(db, conversation_id, filename, out_path, mime_type, file_type, operation)
+        return msg, [rec]
 
     else:
         return f"Unknown operation: {operation}. Please describe what you'd like me to do with your files.", []

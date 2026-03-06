@@ -38,6 +38,10 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _looks_like_pdf_bytes(data: bytes) -> bool:
+    return data.startswith(b"%PDF-")
+
+
 class PDFService:
 
     # ── Compress ──────────────────────────────────────────────────
@@ -697,9 +701,20 @@ class PDFService:
                     stdout, stderr = await process.communicate()
                     
                     pdf_file = os.path.join(temp_dir, "document.pdf")
-                    if os.path.exists(pdf_file):
-                        shutil.copy2(pdf_file, output_path)
-                        return "Generated LaTeX PDF successfully via local compiler."
+                    if process.returncode == 0 and os.path.exists(pdf_file):
+                        with open(pdf_file, "rb") as compiled_pdf:
+                            pdf_bytes = compiled_pdf.read()
+                        if _looks_like_pdf_bytes(pdf_bytes):
+                            with open(output_path, "wb") as f:
+                                f.write(pdf_bytes)
+                            return "Generated document successfully."
+
+                    logger.warning(
+                        "Local pdflatex did not produce a valid PDF. returncode=%s stdout=%s stderr=%s",
+                        process.returncode,
+                        stdout.decode("utf-8", errors="replace")[:3000],
+                        stderr.decode("utf-8", errors="replace")[:3000],
+                    )
                 except Exception as e:
                     logger.warning(f"Local pdflatex failed: {e}. Falling back to API.")
                     
@@ -716,11 +731,16 @@ class PDFService:
                 }
                 response = await client.post("https://texlive.net/cgi-bin/latexcgi", data=data, files=files)
                 response.raise_for_status()
-                
+
+                if not _looks_like_pdf_bytes(response.content):
+                    preview = response.text[:3000]
+                    logger.error("Cloud LaTeX compiler did not return a PDF: %s", preview)
+                    raise ValueError("Compiler returned non-PDF output")
+
                 with open(output_path, "wb") as f:
                     f.write(response.content)
-            
-            return "Generated LaTeX PDF successfully using cloud compiler."
+
+            return "Generated document successfully."
         except Exception as e:
             logger.error(f"LaTeX generation failed: {e}")
             raise ValueError("Failed to compile LaTeX to PDF. Ensure the LaTeX code is valid and doesn't contain errors.")

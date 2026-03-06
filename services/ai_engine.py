@@ -144,6 +144,28 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 - document_to_pdf: (for txt, md, csv, json, html, xml, rtf, log files) params → {}
   ### Generative PDF Operations (CRITICAL: USE THIS INSTEAD OF SAYING YOU CANNOT CREATE PDFS)
   - generate_latex_pdf: Generate a high-quality PDF using LaTeX (ideal for math, schedules, formulas, vectors, physics, resumes, diagrams, academic papers). You MUST write COMPLETE, VALID, COMPILABLE LaTeX code in the params. NEVER say 'I cannot directly create a PDF', because you CAN by returning this operation! params -> { "latex_code": "\\documentclass{article}...\\end{document}", "filename": "document.pdf" }
+
+### Study & Education Operations (generate educational content as professional PDF)
+- generate_study_pack: Generate a COMPLETE study pack (schedule + formula sheet + revision notes + practice questions + worked solutions + flashcard summary) as a single PDF. params → { "topic": "Vectors and 3D Geometry", "duration": "3 hours", "level": "beginner"|"intermediate"|"advanced" }
+- generate_study_schedule: Generate a time-blocked study schedule. params → { "topic": "...", "duration": "3 hours", "level": "intermediate" }
+- generate_formula_sheet: Generate a formula/cheat sheet with all key equations. params → { "topic": "...", "level": "intermediate", "style": "comprehensive"|"compact"|"exam-ready" }
+- generate_revision_notes: Generate detailed revision notes for a topic. params → { "topic": "...", "level": "intermediate" }
+- generate_practice_questions: Generate practice questions with worked solutions. params → { "topic": "...", "level": "intermediate", "difficulty": "easy"|"medium"|"hard"|"mixed", "count": 10 }
+- generate_flashcards: Generate printable flashcard set. params → { "topic": "...", "level": "intermediate", "count": 20 }
+- generate_worksheet: Generate a student worksheet/exercise sheet. params → { "topic": "...", "level": "intermediate", "difficulty": "easy"|"medium"|"hard"|"mixed", "worksheet_type": "practice"|"homework"|"classwork"|"drill", "include_answers": true }
+- generate_exam: Generate a full exam paper with marking scheme. params → { "topic": "...", "level": "intermediate", "difficulty": "mixed", "duration": "2 hours", "total_marks": 100, "sections": "MCQ, Short Answer, Long Answer" }
+- cleanup_notes: Clean up messy/handwritten/rough notes into polished, structured PDF. Requires uploaded document/image. params → { "topic": "..." }
+- generate_from_template: Generate a document from a named template. params → { "template": "lecture_notes"|"cheat_sheet"|"assignment"|"academic_report"|"study_planner", "topic": "...", "level": "intermediate", "extra_instructions": "" }
+
+### Formula & Math Operations
+- formula_ocr: Extract mathematical formulas from an uploaded image and produce clean LaTeX PDF with all equations. Requires an uploaded image. params → {}
+
+### Multi-File Synthesis Operations
+- synthesize_files: Combine content from multiple uploaded files into one unified document. params → { "action": "combine"|"compare"|"extract_formulas"|"summarize", "topic": "" }
+
+### Diagram Generation Operations
+- generate_diagram: Generate a professional diagram/graph/plot. Prefer image output unless the user explicitly asks for a PDF. params → { "topic": "...", "description": "what to draw", "diagram_type": "vector"|"3d_axes"|"geometry"|"graph"|"flowchart"|"circuit"|"plot"|"general", "engine": "tikz"|"matplotlib"|"mermaid", "output_format": "png"|"jpg"|"pdf", "filename"?: "diagram.png" }
+
 ### Content Analysis Operations (read-only, no file output)
 - summarize: Summarize the content of a PDF, document, or image. params → { detail?: "brief"|"detailed" }
 - answer_about_content: Answer a specific question about the file's content. params → { question: "the user's question" }
@@ -184,6 +206,18 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 25. For "transcribe", "speech to text", "what does this audio say" → use transcribe_audio.
 26. For "zip", "zip it", "zip these files", "create a zip", "bundle", "archive", "make a zip", "download as zip", "zip all files" → use zip_files. Do NOT confuse with compress — "zip" means create a ZIP archive, "compress" means reduce file size.
 27. CRITICAL DISAMBIGUATION: "compress" / "reduce size" / "make smaller" / "shrink" → compress_pdf / compress_image / compress_audio (reduces quality/size). "zip" / "archive" / "bundle" / "zip it" → zip_files (creates a .zip container). Never mix these up.
+28. For "make me a study pack", "study plan", "help me study X" → use generate_study_pack. For just a schedule → generate_study_schedule. For just formulas → generate_formula_sheet.
+29. For "make a worksheet", "practice sheet", "exercises", "homework sheet" → use generate_worksheet.
+30. For "make an exam", "test paper", "mock exam", "practice test" → use generate_exam.
+31. For "flashcards", "flash cards", "revision cards", "Q&A cards" → use generate_flashcards.
+32. For "extract formulas from this image", "OCR the math", "read the equations" → use formula_ocr (requires uploaded image).
+33. For "combine these files", "merge notes", "synthesize", "create master notes from these" → use synthesize_files (requires multiple uploaded files).
+34. For "draw a diagram", "plot", "graph", "draw vectors", "make a flowchart", "draw axes" → use generate_diagram. Default to output_format="png" unless the user explicitly asks for PDF.
+35. For "clean up my notes", "fix my notes", "organize these notes", "polish my notes" → use cleanup_notes (requires uploaded file).
+36. For "lecture notes template", "cheat sheet template", "assignment template" → use generate_from_template.
+37. For "revision notes", "study notes", "summary notes for X" → use generate_revision_notes.
+38. For "practice questions", "give me questions on X", "problems with solutions" → use generate_practice_questions.
+39. IMPORTANT: Study/education operations (generate_study_pack, generate_worksheet, etc.) do NOT require uploaded files — they generate content from AI knowledge. formula_ocr, cleanup_notes, and synthesize_files DO require uploaded files.
 """
 
 # ── JSON schema for structured output ─────────────────────────────

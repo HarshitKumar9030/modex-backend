@@ -43,6 +43,13 @@ def _safe_error_msg(error: Exception, context: str = "processing your request") 
     return f"Something went wrong while {context}. Please try again — if the problem persists, try a different approach."
 
 
+def _sanitize_assistant_explanation(operation: str, explanation: str) -> str:
+    """Keep user-facing operation summaries generic and free of implementation details."""
+    if operation == "generate_diagram":
+        return "I will generate the requested diagram as an image."
+    return explanation
+
+
 class ChatService:
 
     @staticmethod
@@ -143,7 +150,10 @@ class ChatService:
         )
 
         processed_files: List[FileDoc] = []
-        assistant_content = decision["explanation"]
+        assistant_content = _sanitize_assistant_explanation(
+            decision.get("operation", "unknown"),
+            decision["explanation"],
+        )
 
         if decision.get("needs_clarification"):
             pass
@@ -241,7 +251,7 @@ class ChatService:
                     all_results.append(f"**{step_op}:** ⚠️ {_safe_error_msg(step_error, step_op)}")
                     # Don't clear latest_output_ids — let the next step try with whatever was last produced
 
-            assistant_content = f"{decision['explanation']}\n\n" + "\n\n".join(all_results)
+            assistant_content = f"{_sanitize_assistant_explanation(decision['operation'], decision['explanation'])}\n\n" + "\n\n".join(all_results)
             if failed_steps == len(steps):
                 assistant_content = "All operations failed. Please try again — if the problem persists, try processing files one at a time."
             # Deduplicate output records by ID
@@ -261,7 +271,7 @@ class ChatService:
                     params=decision.get("params", {}),
                     conversation_id=conversation_id,
                 )
-                assistant_content = f"{decision['explanation']}\n\n**Result:** {result_msg}"
+                assistant_content = f"{_sanitize_assistant_explanation(decision['operation'], decision['explanation'])}\n\n**Result:** {result_msg}"
                 processed_files = output_records
             except Exception as e:
                 assistant_content = _safe_error_msg(e, decision['explanation'].lower())
