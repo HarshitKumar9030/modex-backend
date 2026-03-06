@@ -668,6 +668,62 @@ class PDFService:
             logger.error(f"PDF OCR failed: {e}")
             raise ValueError(f"Failed to OCR PDF: {e}")
 
+    @staticmethod
+    async def generate_latex_pdf(latex_code: str, output_path: str, params: Dict[str, Any]) -> str:
+        """
+        Generates a PDF layout from raw LaTeX code.
+        Will attempt to use local pdflatex first (for privacy and speed),
+        and fall back to a public LaTeX compilation API if latex is not installed.
+        """
+        import asyncio
+        import shutil
+        import httpx
+        from tempfile import TemporaryDirectory
+        
+        # 1. Try local pdflatex first
+        if shutil.which("pdflatex"):
+            with TemporaryDirectory() as temp_dir:
+                tex_file = os.path.join(temp_dir, "document.tex")
+                with open(tex_file, "w", encoding="utf-8") as f:
+                    f.write(latex_code)
+                
+                try:
+                    process = await asyncio.create_subprocess_exec(
+                        "pdflatex", "-interaction=nonstopmode", "document.tex",
+                        cwd=temp_dir,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout, stderr = await process.communicate()
+                    
+                    pdf_file = os.path.join(temp_dir, "document.pdf")
+                    if os.path.exists(pdf_file):
+                        shutil.copy2(pdf_file, output_path)
+                        return "Generated LaTeX PDF successfully via local compiler."
+                except Exception as e:
+                    logger.warning(f"Local pdflatex failed: {e}. Falling back to API.")
+                    
+        # 2. Fall back to texlive.net API
+        try:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                data = {
+                    "filename[]": "document.tex",
+                    "engine": "pdflatex",
+                    "return": "pdf"
+                }
+                files = {
+                    "filecontents[]": ("document.tex", latex_code.encode("utf-8"))
+                }
+                response = await client.post("https://texlive.net/cgi-bin/latexcgi", data=data, files=files)
+                response.raise_for_status()
+                
+                with open(output_path, "wb") as f:
+                    f.write(response.content)
+            
+            return "Generated LaTeX PDF successfully using cloud compiler."
+        except Exception as e:
+            logger.error(f"LaTeX generation failed: {e}")
+            raise ValueError("Failed to compile LaTeX to PDF. Ensure the LaTeX code is valid and doesn't contain errors.")
 
 # ── Private helpers ───────────────────────────────────────────────
 

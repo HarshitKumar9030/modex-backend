@@ -1,12 +1,16 @@
 FROM python:3.12-slim
 
-# System deps for pdf2image (poppler), pydub (ffmpeg), and OCR (tesseract)
+# System deps for pdf2image (poppler), pydub (ffmpeg), OCR (tesseract) and LaTeX
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         poppler-utils \
         ffmpeg \
         tesseract-ocr \
         tesseract-ocr-eng \
+        texlive-latex-base \
+        texlive-latex-extra \
+        texlive-fonts-recommended \
+        texlive-science \
     && rm -rf /var/lib/apt/lists/*
 
 # Explicit path for pdf2image poppler binaries inside Debian slim image

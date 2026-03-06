@@ -525,3 +525,4 @@ async def general_chat(
     friendly = _friendly_message(last_error) if last_error else "Something went wrong."
     logger.error(f"General chat failed after {MAX_RETRIES} attempts: {last_error}")
     return friendly
+

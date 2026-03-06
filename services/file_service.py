@@ -512,6 +512,26 @@ async def _dispatch_operation(
             results.append(msg)
         return "\n".join(results) or "No images to remove background from.", output_records
 
+    # ── Generative & Advanced Operations ─────────────────────────────
+    elif operation == "generate_latex_pdf":
+        latex_code = params.get("latex_code", "")
+        if not latex_code:
+            return "No LaTeX code provided.", []
+            
+        filename = params.get("filename", "document.pdf")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+            
+        out_path = os.path.join(output_dir, filename)
+        
+        from services.pdf_service import PDFService
+        msg = await PDFService.generate_latex_pdf(latex_code, out_path, params)
+        
+        rec = await _create_output_record(
+            db, conversation_id, filename, out_path, "application/pdf", "document", operation
+        )
+        return msg, [rec]
+
     # ── Utility operations ──────────────────────────────────────────
     elif operation == "zip_files":
         import zipfile as zf_mod
@@ -557,3 +577,4 @@ async def _dispatch_operation(
 
     else:
         return f"Unknown operation: {operation}. Please describe what you'd like me to do with your files.", []
+
