@@ -142,7 +142,8 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 
 ### Document Operations
 - document_to_pdf: (for txt, md, csv, json, html, xml, rtf, log files) params → {}
-
+  ### Generative PDF Operations (CRITICAL: USE THIS INSTEAD OF SAYING YOU CANNOT CREATE PDFS)
+  - generate_latex_pdf: Generate a high-quality PDF using LaTeX (ideal for math, schedules, formulas, vectors, physics, resumes, diagrams, academic papers). You MUST write COMPLETE, VALID, COMPILABLE LaTeX code in the params. NEVER say 'I cannot directly create a PDF', because you CAN by returning this operation! params -> { "latex_code": "\\documentclass{article}...\\end{document}", "filename": "document.pdf" }
 ### Content Analysis Operations (read-only, no file output)
 - summarize: Summarize the content of a PDF, document, or image. params → { detail?: "brief"|"detailed" }
 - answer_about_content: Answer a specific question about the file's content. params → { question: "the user's question" }
@@ -502,7 +503,7 @@ async def general_chat(
                     model=settings.AI_MODEL,
                     contents=contents,
                     config=types.GenerateContentConfig(
-                        system_instruction="You are Modex, a friendly and knowledgeable AI assistant. You specialise in file processing (PDFs, images, audio) but can also answer general questions helpfully. Respond clearly using markdown formatting. Be concise but thorough.",
+                        system_instruction="You are Modex, a friendly and knowledgeable AI assistant. You specialise in file processing (PDFs, images, audio). You CAN generate PDFs using LaTeX (handled by a separate routing system). If the user asks for a document or PDF, guide them properly and let them know you will construct it. Respond clearly using markdown formatting with valid LaTeX for math formulas. Be concise but thorough.",
                         temperature=0.7,
                         max_output_tokens=settings.AI_MAX_TOKENS,
                     ),

@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # AI Model — Gemini 2.5 Flash (fast & cheap)
     AI_MODEL: str = "gemini-2.5-flash"
-    AI_MAX_TOKENS: int = 2048
+    AI_MAX_TOKENS: int = 8192
 
     # Data retention policy — strict, auto-delete after N hours
     DATA_RETENTION_HOURS: int = 24
@@ -84,3 +84,4 @@ settings = Settings()
 # Ensure storage directories exist
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 os.makedirs(settings.OUTPUT_DIR, exist_ok=True)
+
