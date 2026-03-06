@@ -33,7 +33,8 @@ Duration: {duration}
 Level: {level}
 
 Output COMPLETE, COMPILABLE LaTeX code for a professional study schedule PDF.
-Use: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, tikz, fancyhdr packages.
+Use ONLY these packages: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, fancyhdr, tabularx, booktabs.
+Do NOT use tcolorbox, tikz, or pgfplots. Use \\colorbox and \\fbox for colored boxes instead.
 Include clear time blocks, learning objectives per block, key concepts to cover, and quick-review checkpoints.
 Make it visually clean with sections, colored headers, and tables.
 The LaTeX code must compile without errors. Output ONLY the LaTeX code, nothing else."""
@@ -45,7 +46,8 @@ Level: {level}
 Style: {style}
 
 Output COMPLETE, COMPILABLE LaTeX code for a professional formula sheet PDF.
-Use: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, multicol, tcolorbox packages.
+Use ONLY these packages: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, multicol, fancyhdr, array.
+Do NOT use tcolorbox or tikz. Use \\colorbox and \\fbox for colored boxes instead.
 Organize formulas by sub-topic in colored boxes. Include variable definitions.
 Use compact layout (small margins, multicol). Every formula must be correct.
 The LaTeX code must compile without errors. Output ONLY the LaTeX code, nothing else."""
@@ -57,7 +59,8 @@ Level: {level}
 Source material: {source_text}
 
 Output COMPLETE, COMPILABLE LaTeX code for professional revision notes PDF.
-Use: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, tcolorbox, fancyhdr packages.
+Use ONLY these packages: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, fancyhdr, mdframed.
+Do NOT use tcolorbox or tikz. Use \\colorbox, \\fbox, or mdframed environments for colored boxes instead.
 Include: key definitions, theorems, worked examples, common pitfalls, exam tips.
 Use colored definition/theorem boxes, numbered examples, and clear section structure.
 The LaTeX code must compile without errors. Output ONLY the LaTeX code, nothing else."""
@@ -84,11 +87,12 @@ Level: {level}
 Count: {count}
 
 Output COMPLETE, COMPILABLE LaTeX code for printable flashcards PDF.
-Use: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, tikz packages.
+Use ONLY these packages: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, array, tabularx.
+Do NOT use tcolorbox or tikz. Use \\fbox and \\colorbox for card borders and backgrounds.
 Create cards with:
-- Front: Question or term (in a bordered box)
-- Back: Answer or definition (in a colored box)
-Layout: 2 cards per row, 4 per page. Include cut lines.
+- Front: Question or term (in a bordered box using \\fbox)
+- Back: Answer or definition (in a colored box using \\colorbox)
+Layout: 2 cards per row, 4 per page. Use tabular for layout, \\hrule for cut lines.
 The LaTeX code must compile without errors. Output ONLY the LaTeX code, nothing else."""
 
 WORKSHEET_PROMPT = """You are an expert teacher. Generate a worksheet.
@@ -100,7 +104,8 @@ Type: {worksheet_type}
 Include answer key: {include_answers}
 
 Output COMPLETE, COMPILABLE LaTeX code for a professional worksheet PDF.
-Use: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, fancyhdr packages.
+Use ONLY these packages: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, fancyhdr.
+Do NOT use tcolorbox, tikz, or pgfplots.
 Include: title header with space for name/date, instructions, numbered questions with
 adequate working space, and if requested, a detachable answer key section.
 The LaTeX code must compile without errors. Output ONLY the LaTeX code, nothing else."""
@@ -115,7 +120,8 @@ Total marks: {total_marks}
 Sections: {sections}
 
 Output COMPLETE, COMPILABLE LaTeX code for a professional exam paper PDF.
-Use: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, fancyhdr, lastpage packages.
+Use ONLY these packages: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, fancyhdr.
+Do NOT use tcolorbox, tikz, pgfplots, or lastpage.
 Include:
 - Cover page with instructions, duration, total marks
 - Multiple sections (MCQ, short answer, long answer) with marks per question
@@ -138,8 +144,9 @@ Output COMPLETE, COMPILABLE LaTeX code for a comprehensive study pack PDF that c
 5. WORKED SOLUTIONS — Step-by-step solutions to all practice questions
 6. FLASHCARD SUMMARY — Quick Q&A pairs for rapid revision
 
-Use: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, tcolorbox, tikz, fancyhdr, multicol, lastpage packages.
-Use \\newpage between major sections. Professional formatting with colored boxes, clean headers.
+Use ONLY these packages: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, fancyhdr, multicol, tabularx, booktabs, array, hyperref.
+Do NOT use tcolorbox, tikz, pgfplots, or lastpage. Use \\colorbox and \\fbox for colored boxes instead.
+Use \\newpage between major sections. Professional formatting with colored boxes (\\colorbox), clean headers.
 The LaTeX code MUST compile without errors. Output ONLY the LaTeX code, nothing else."""
 
 CLEANUP_NOTES_PROMPT = """You are an expert academic editor. Clean up and restructure the following messy/rough notes into polished, well-organized study material.
@@ -148,7 +155,8 @@ Raw input:
 {source_text}
 
 Output COMPLETE, COMPILABLE LaTeX code for a polished notes PDF.
-Use: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, tcolorbox, fancyhdr packages.
+Use ONLY these packages: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, fancyhdr, mdframed.
+Do NOT use tcolorbox or tikz. Use \\colorbox, \\fbox, or mdframed for colored boxes.
 - Fix any mathematical notation errors
 - Organize content into clear sections and subsections
 - Add formatted definition/theorem boxes
@@ -174,7 +182,8 @@ Additional instructions: {extra}
 Style description: {style_desc}
 
 Output COMPLETE, COMPILABLE LaTeX code for this document.
-Use: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, tcolorbox, fancyhdr, tikz, multicol packages as needed.
+Use ONLY these standard packages: \\documentclass{{article}}, amsmath, amssymb, geometry, xcolor, enumitem, fancyhdr, multicol, tabularx, booktabs, array, hyperref.
+Do NOT use tcolorbox, tikz, or pgfplots. Use \\colorbox and \\fbox for colored boxes.
 Professional formatting. The LaTeX code MUST compile without errors. Output ONLY the LaTeX code, nothing else."""
 
 
@@ -193,7 +202,7 @@ class StudyService:
                     model=settings.AI_MODEL,
                     contents=[types.Content(role="user", parts=[types.Part.from_text(text=prompt)])],
                     config=types.GenerateContentConfig(
-                        system_instruction="You are a LaTeX document generator. Output ONLY valid, complete, compilable LaTeX code. No explanations, no markdown fences, just raw LaTeX starting with \\documentclass and ending with \\end{document}.",
+                        system_instruction="You are a LaTeX document generator. Output ONLY valid, complete, compilable LaTeX code. No explanations, no markdown fences, just raw LaTeX starting with \\documentclass and ending with \\end{document}. CRITICAL: Do NOT use tcolorbox, tikz, pgfplots, or lastpage packages. Use only standard packages: amsmath, amssymb, geometry, xcolor, enumitem, fancyhdr, multicol, tabularx, booktabs, array, hyperref, mdframed. For colored boxes use \\colorbox or \\fbox.",
                         temperature=0.2,
                         max_output_tokens=settings.AI_MAX_TOKENS,
                     ),

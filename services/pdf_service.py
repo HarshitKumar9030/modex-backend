@@ -678,74 +678,170 @@ class PDFService:
         Generates a PDF layout from raw LaTeX code.
         Will attempt to use local pdflatex first (for privacy and speed),
         and fall back to a public LaTeX compilation API if latex is not installed.
+        If compilation fails, automatically extracts the error and asks Gemini
+        to fix the LaTeX, then retries once.
         """
         import asyncio
         import shutil
         import httpx
         from tempfile import TemporaryDirectory
-        
-        # 1. Try local pdflatex first
-        if shutil.which("pdflatex"):
-            with TemporaryDirectory() as temp_dir:
-                tex_file = os.path.join(temp_dir, "document.tex")
-                with open(tex_file, "w", encoding="utf-8") as f:
-                    f.write(latex_code)
-                
-                try:
-                    process = await asyncio.create_subprocess_exec(
-                        "pdflatex", "-interaction=nonstopmode", "document.tex",
-                        cwd=temp_dir,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    stdout, stderr = await process.communicate()
-                    
-                    pdf_file = os.path.join(temp_dir, "document.pdf")
-                    if process.returncode == 0 and os.path.exists(pdf_file):
-                        with open(pdf_file, "rb") as compiled_pdf:
-                            pdf_bytes = compiled_pdf.read()
-                        if _looks_like_pdf_bytes(pdf_bytes):
-                            with open(output_path, "wb") as f:
-                                f.write(pdf_bytes)
-                            return "Generated document successfully."
 
-                    logger.warning(
-                        "Local pdflatex did not produce a valid PDF. returncode=%s stdout=%s stderr=%s",
-                        process.returncode,
-                        stdout.decode("utf-8", errors="replace")[:3000],
-                        stderr.decode("utf-8", errors="replace")[:3000],
-                    )
-                except Exception as e:
-                    logger.warning(f"Local pdflatex failed: {e}. Falling back to API.")
-                    
-        # 2. Fall back to texlive.net API
-        try:
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-                data = {
-                    "filename[]": "document.tex",
-                    "engine": "pdflatex",
-                    "return": "pdf"
-                }
-                files = {
-                    "filecontents[]": ("document.tex", latex_code.encode("utf-8"))
-                }
-                response = await client.post("https://texlive.net/cgi-bin/latexcgi", data=data, files=files)
-                response.raise_for_status()
+        MAX_ATTEMPTS = 2
+        current_latex = latex_code
 
-                if not _looks_like_pdf_bytes(response.content):
-                    preview = response.text[:3000]
-                    logger.error("Cloud LaTeX compiler did not return a PDF: %s", preview)
-                    raise ValueError("Compiler returned non-PDF output")
+        for attempt in range(MAX_ATTEMPTS):
+            # 1. Try local pdflatex first
+            local_log = ""
+            if shutil.which("pdflatex"):
+                with TemporaryDirectory() as temp_dir:
+                    tex_file = os.path.join(temp_dir, "document.tex")
+                    with open(tex_file, "w", encoding="utf-8") as f:
+                        f.write(current_latex)
 
-                with open(output_path, "wb") as f:
-                    f.write(response.content)
+                    try:
+                        process = await asyncio.create_subprocess_exec(
+                            "pdflatex", "-interaction=nonstopmode", "document.tex",
+                            cwd=temp_dir,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                        )
+                        stdout, stderr = await process.communicate()
 
-            return "Generated document successfully."
-        except Exception as e:
-            logger.error(f"LaTeX generation failed: {e}")
-            raise ValueError("Failed to compile LaTeX to PDF. Ensure the LaTeX code is valid and doesn't contain errors.")
+                        pdf_file = os.path.join(temp_dir, "document.pdf")
+                        if process.returncode == 0 and os.path.exists(pdf_file):
+                            with open(pdf_file, "rb") as compiled_pdf:
+                                pdf_bytes = compiled_pdf.read()
+                            if _looks_like_pdf_bytes(pdf_bytes):
+                                with open(output_path, "wb") as f:
+                                    f.write(pdf_bytes)
+                                return "Generated document successfully."
+
+                        local_log = stdout.decode("utf-8", errors="replace")[:4000]
+                        logger.warning(
+                            "Local pdflatex did not produce a valid PDF (attempt %d). returncode=%s",
+                            attempt + 1, process.returncode,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Local pdflatex failed: {e}. Falling back to API.")
+
+            # 2. Fall back to texlive.net API
+            cloud_log = ""
+            try:
+                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                    data = {
+                        "filename[]": "document.tex",
+                        "engine": "pdflatex",
+                        "return": "pdf",
+                    }
+                    files = {
+                        "filecontents[]": ("document.tex", current_latex.encode("utf-8"))
+                    }
+                    response = await client.post("https://texlive.net/cgi-bin/latexcgi", data=data, files=files)
+                    response.raise_for_status()
+
+                    if _looks_like_pdf_bytes(response.content):
+                        with open(output_path, "wb") as f:
+                            f.write(response.content)
+                        return "Generated document successfully."
+
+                    # Compilation failed — capture the log for auto-fix
+                    cloud_log = response.text[:4000]
+                    logger.warning("Cloud compiler returned log instead of PDF (attempt %d)", attempt + 1)
+            except Exception as e:
+                logger.warning(f"Cloud API call failed (attempt {attempt + 1}): {e}")
+
+            # 3. If this is not the last attempt, auto-fix the LaTeX using Gemini
+            if attempt < MAX_ATTEMPTS - 1:
+                error_log = cloud_log or local_log
+                error_snippet = _extract_latex_errors(error_log)
+                if error_snippet:
+                    logger.info("Attempting auto-fix of LaTeX (errors: %s)", error_snippet[:200])
+                    fixed = await _autofix_latex(current_latex, error_snippet)
+                    if fixed and fixed != current_latex:
+                        current_latex = fixed
+                        continue
+                # No useful error or autofix identical — don't bother retrying
+                break
+
+        raise ValueError("Failed to compile LaTeX to PDF. Ensure the LaTeX code is valid and doesn't contain errors.")
 
 # ── Private helpers ───────────────────────────────────────────────
+
+
+import re as _re
+
+
+def _extract_latex_errors(log_text: str) -> str:
+    """Pull the meaningful error lines out of a pdflatex / texlive log."""
+    if not log_text:
+        return ""
+    error_lines: list[str] = []
+    for line in log_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("!") or "Error" in stripped or "Undefined control sequence" in stripped:
+            error_lines.append(stripped)
+        elif stripped.startswith("l.") and error_lines:
+            error_lines.append(stripped)
+    if not error_lines:
+        # Fallback: grab last 15 lines which usually contain the error
+        tail = log_text.strip().splitlines()[-15:]
+        return "\n".join(tail)
+    return "\n".join(error_lines[:20])
+
+
+async def _autofix_latex(broken_latex: str, error_snippet: str) -> str:
+    """Ask Gemini to fix broken LaTeX code based on the compiler error."""
+    import asyncio
+    from google import genai
+    from google.genai import types
+    from core.config import settings
+
+    prompt = (
+        "The following LaTeX code failed to compile. Fix ALL errors and return "
+        "ONLY the corrected, complete LaTeX code (from \\documentclass to \\end{document}). "
+        "Do NOT wrap in markdown fences. Do NOT include explanations.\n\n"
+        "IMPORTANT RULES FOR THE FIX:\n"
+        "- Use ONLY standard packages available in TeX Live (article, amsmath, amssymb, geometry, "
+        "xcolor, enumitem, fancyhdr, multicol, hyperref, graphicx, tabularx, booktabs, array).\n"
+        "- AVOID tcolorbox, tikz, pgfplots, and other heavy packages unless absolutely needed.\n"
+        "- Replace tcolorbox colored boxes with simple \\fbox or \\colorbox commands.\n"
+        "- Replace tikz drawings with plain text or tabular layouts.\n"
+        "- Ensure every \\begin has a matching \\end.\n"
+        "- Do NOT use any undefined commands.\n\n"
+        f"COMPILER ERRORS:\n{error_snippet}\n\n"
+        f"BROKEN LATEX CODE:\n{broken_latex}"
+    )
+
+    try:
+        client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                client.models.generate_content,
+                model=settings.AI_MODEL,
+                contents=[types.Content(role="user", parts=[types.Part.from_text(text=prompt)])],
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=settings.AI_MAX_TOKENS,
+                ),
+            ),
+            timeout=60,
+        )
+
+        if not response.text:
+            return broken_latex
+
+        fixed = response.text.strip()
+        # Strip markdown fences if present
+        if fixed.startswith("```"):
+            lines = fixed.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            fixed = "\n".join(lines)
+
+        return fixed
+    except Exception as e:
+        logger.warning(f"Auto-fix LaTeX via Gemini failed: {e}")
+        return broken_latex
+
 
 def _compress_pdf_images(page, quality: str):
     """Recompress images inside a PDF page."""
