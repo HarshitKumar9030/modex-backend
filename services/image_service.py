@@ -216,28 +216,86 @@ class ImageService:
     @staticmethod
     async def remove_background(input_path: str, output_path: str, params: Dict[str, Any]) -> str:
         """
-        Remove the background from an image. Params:
-          - model (str, optional): rembg model name, default "u2net"
+        Remove the background from an image using U2-Net via ONNX Runtime.
         Always outputs PNG (transparency support).
         """
-        from rembg import remove as rembg_remove
-
         try:
             img = Image.open(input_path).convert("RGBA")
-            result = rembg_remove(img)
+            mask = _u2net_predict(img)
 
-            # Always save as PNG for transparency
+            # Apply mask as alpha channel
+            empty = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            result = Image.composite(img, empty, mask)
+
             base = os.path.splitext(output_path)[0]
             output_path = f"{base}.png"
             result.save(output_path, format="PNG")
 
             return f"Background removed — saved as PNG ({os.path.getsize(output_path) / 1024:.1f} KB)"
 
-        except ImportError:
-            raise ValueError("Background removal is not available — rembg is not installed")
         except Exception as e:
             logger.error(f"Background removal failed: {e}")
             raise ValueError(f"Failed to remove background: {e}")
+
+
+# ── U2-Net background removal (onnxruntime) ──────────────────────
+
+import numpy as np
+
+_U2NET_SIZE = 320
+_u2net_session = None
+_U2NET_URL = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx"
+
+
+def _get_u2net_session():
+    """Lazy-load the U2-Net ONNX model, downloading if needed."""
+    global _u2net_session
+    if _u2net_session is not None:
+        return _u2net_session
+
+    import onnxruntime as ort
+    from pathlib import Path
+
+    model_dir = Path(settings.UPLOAD_DIR).parent / ".models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_path = model_dir / "u2net.onnx"
+
+    if not model_path.exists():
+        logger.info("Downloading U2-Net model (~176 MB)…")
+        import urllib.request
+        urllib.request.urlretrieve(_U2NET_URL, str(model_path))
+        logger.info("U2-Net model downloaded.")
+
+    _u2net_session = ort.InferenceSession(
+        str(model_path),
+        providers=["CPUExecutionProvider"],
+    )
+    return _u2net_session
+
+
+def _u2net_predict(img: Image.Image) -> Image.Image:
+    """Run U2-Net inference and return an L-mode mask the same size as *img*."""
+    orig_size = img.size  # (W, H)
+
+    # Preprocess: resize, normalise to [0, 1], then per-channel norm
+    tmp = img.convert("RGB").resize((_U2NET_SIZE, _U2NET_SIZE), Image.BILINEAR)
+    arr = np.array(tmp, dtype=np.float32) / 255.0
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    arr = (arr - mean) / std
+    tensor = arr.transpose(2, 0, 1)[np.newaxis, ...]  # (1, 3, 320, 320)
+
+    session = _get_u2net_session()
+    input_name = session.get_inputs()[0].name
+    outputs = session.run(None, {input_name: tensor})
+
+    # First output is the main prediction
+    pred = outputs[0].squeeze()
+    pred = (pred - pred.min()) / (pred.max() - pred.min() + 1e-8)
+    mask = (pred * 255).astype(np.uint8)
+
+    mask_img = Image.fromarray(mask, mode="L").resize(orig_size, Image.BILINEAR)
+    return mask_img
 
 
 # ── Private helpers ───────────────────────────────────────────────

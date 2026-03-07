@@ -19,6 +19,7 @@ apscheduler==3.10.4
 reportlab==4.4.0
 markdown==3.7
 rembg==2.0.57
+onnxruntime>=1.23.2
 pytesseract==0.3.13
 matplotlib==3.9.3
 numpy==2.2.1
