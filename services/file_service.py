@@ -559,7 +559,6 @@ async def _dispatch_operation(
             
         out_path = os.path.join(output_dir, filename)
         
-        from services.pdf_service import PDFService
         msg = await PDFService.generate_latex_pdf(latex_code, out_path, params)
         
         rec = await _create_output_record(
