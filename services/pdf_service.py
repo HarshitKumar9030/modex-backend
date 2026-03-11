@@ -54,6 +54,8 @@ class PDFService:
           - quality (str): "low", "medium", "high" — maps to compression levels
         """
         target_kb = params.get("target_size_kb")
+        if target_kb is not None:
+            target_kb = int(target_kb)
         quality = params.get("quality", "medium")
 
         try:
@@ -149,7 +151,7 @@ class PDFService:
           - degrees (int): 90, 180, 270
           - pages (list[int], optional): specific pages to rotate (1-indexed), default all
         """
-        degrees = params.get("degrees", 90)
+        degrees = int(params.get("degrees", 90))
         try:
             reader = PdfReader(input_path)
             writer = PdfWriter()
@@ -180,7 +182,7 @@ class PDFService:
           - dpi (int): resolution, default 150
         """
         fmt = params.get("format", "png")
-        dpi = params.get("dpi", 150)
+        dpi = int(params.get("dpi", 150))
 
         try:
             reader = PdfReader(input_path)
@@ -219,7 +221,7 @@ class PDFService:
           - pages (list[int], optional): specific pages (1-indexed)
         """
         fmt = params.get("format", "png")
-        dpi = params.get("dpi", 200)
+        dpi = int(params.get("dpi", 200))
         target_pages = params.get("pages")
 
         try:
@@ -258,7 +260,7 @@ class PDFService:
           - min_size (int): minimum pixel dimension to keep (skip tiny icons), default 50
         """
         fmt = params.get("format", "png")
-        min_size = params.get("min_size", 50)
+        min_size = int(params.get("min_size", 50))
 
         try:
             base_name = os.path.splitext(os.path.basename(input_path))[0]
@@ -289,8 +291,14 @@ class PDFService:
                             continue
 
             if not output_paths:
-                # Fallback: render pages as images so user still gets something
-                return await PDFService.pdf_pages_to_images(input_path, output_dir, params)
+                # If there are no images, do not fallback to full page rasterization by default unless explicitly asked.
+                # In environments without poppler, that will crash.
+                try:
+                    return await PDFService.pdf_pages_to_images(input_path, output_dir, params)
+                except Exception as ex:
+                    # poppler might be missing, or other error.
+                    logger.warning(f"Fallback pdf_pages_to_images failed: {ex}. Returning text response.")
+                    return [f"No extractable images found in PDF, and full page rasterization failed ({ex})."]
 
             return output_paths
 
@@ -540,9 +548,21 @@ class PDFService:
         from reportlab.lib.colors import Color
 
         text = params.get("text", "CONFIDENTIAL")
-        opacity = max(0.01, min(1.0, params.get("opacity", 0.15)))
-        angle = params.get("angle", 45)
-        font_size = params.get("font_size", 60)
+        try:
+            opacity = float(params.get("opacity", 0.15))
+        except (ValueError, TypeError):
+            opacity = 0.15
+        opacity = max(0.01, min(1.0, opacity))
+            
+        try:
+            angle = float(params.get("angle", 45))
+        except (ValueError, TypeError):
+            angle = 45
+            
+        try:
+            font_size = float(params.get("font_size", 60))
+        except (ValueError, TypeError):
+            font_size = 60
 
         try:
             reader = PdfReader(input_path)
@@ -642,7 +662,10 @@ class PDFService:
         import pytesseract
 
         language = params.get("language", "eng")
-        dpi = params.get("dpi", 300)
+        try:
+            dpi = int(params.get("dpi", 300))
+        except (ValueError, TypeError):
+            dpi = 300
 
         try:
             images = convert_from_path(input_path, dpi=dpi)
