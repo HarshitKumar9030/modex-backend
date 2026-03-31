@@ -186,6 +186,20 @@ Use ONLY these standard packages: \\documentclass{{article}}, amsmath, amssymb, 
 Do NOT use tcolorbox, tikz, or pgfplots. Use \\colorbox and \\fbox for colored boxes.
 Professional formatting. The LaTeX code MUST compile without errors. Output ONLY the LaTeX code, nothing else."""
 
+CUSTOM_PDF_PROMPT = """You are an expert LaTeX document generator.
+
+User request:
+{user_prompt}
+
+Generate EXACTLY what the user asked for as a PDF-ready LaTeX document.
+Requirements:
+- Output COMPLETE, COMPILABLE LaTeX code only.
+- Start with \\documentclass and end with \\end{{document}}.
+- Do NOT add extra sections not requested.
+- Do NOT add commentary, markdown fences, or explanations.
+- Preserve requested scope, detail level, and formatting intent as closely as possible.
+"""
+
 
 class StudyService:
     """Generates educational content via Gemini + LaTeX pipeline."""
@@ -365,6 +379,18 @@ class StudyService:
         latex = await StudyService._generate_latex(prompt)
         await StudyService._compile_and_save(latex, output_path)
         return f"Generated {template_name.replace('_', ' ')} for '{topic}'."
+
+    @staticmethod
+    async def generate_custom_pdf(output_path: str, params: Dict[str, Any]) -> str:
+        """Generate a custom PDF by following the user's prompt exactly."""
+        user_prompt = str(params.get("prompt", "")).strip()
+        if not user_prompt:
+            raise ValueError("No prompt provided for custom PDF generation.")
+
+        prompt = CUSTOM_PDF_PROMPT.format(user_prompt=user_prompt)
+        latex = await StudyService._generate_latex(prompt)
+        await StudyService._compile_and_save(latex, output_path)
+        return "Generated custom PDF from your prompt."
 
     @staticmethod
     async def formula_ocr(image_path: str, output_path: str, params: Dict[str, Any]) -> str:

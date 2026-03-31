@@ -42,6 +42,30 @@ def _looks_like_pdf_bytes(data: bytes) -> bool:
     return data.startswith(b"%PDF-")
 
 
+def _normalize_image_format(fmt: Any, default: str = "png") -> tuple[str, str]:
+    """Return (ext, PIL format)."""
+    raw = str(fmt or default).strip().lower()
+    if raw in {"jpg", "jpeg"}:
+        return "jpg", "JPEG"
+    if raw == "png":
+        return "png", "PNG"
+    return default, default.upper()
+
+
+def _normalize_page_list(value: Any) -> Optional[List[int]]:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        pages = []
+        for v in value:
+            try:
+                pages.append(int(v))
+            except (TypeError, ValueError):
+                continue
+        return pages or None
+    return None
+
+
 class PDFService:
 
     # ── Compress ──────────────────────────────────────────────────
@@ -181,7 +205,7 @@ class PDFService:
           - format (str): "png" or "jpg", default "png"
           - dpi (int): resolution, default 150
         """
-        fmt = params.get("format", "png")
+        fmt, pil_fmt = _normalize_image_format(params.get("format", "png"), "png")
         dpi = int(params.get("dpi", 150))
 
         try:
@@ -196,7 +220,7 @@ class PDFService:
                     for j, (name, raw) in enumerate(page.images.items()):
                         pil_image = Image.open(io.BytesIO(raw.read_raw_bytes()))
                         out_path = os.path.join(output_dir, f"{base_name}_p{i+1}_{j}.{fmt}")
-                        pil_image.save(out_path, format=fmt.upper(), dpi=(dpi, dpi))
+                        pil_image.save(out_path, format=pil_fmt, dpi=(dpi, dpi))
                         output_paths.append(out_path)
 
             if not output_paths:
@@ -220,9 +244,9 @@ class PDFService:
           - dpi (int): resolution, default 200
           - pages (list[int], optional): specific pages (1-indexed)
         """
-        fmt = params.get("format", "png")
+        fmt, pil_fmt = _normalize_image_format(params.get("format", "png"), "png")
         dpi = int(params.get("dpi", 200))
-        target_pages = params.get("pages")
+        target_pages = _normalize_page_list(params.get("pages"))
 
         try:
             base_name = os.path.splitext(os.path.basename(input_path))[0]
@@ -239,7 +263,7 @@ class PDFService:
                 page_num = (target_pages[i] if target_pages and i < len(target_pages)
                             else (convert_kwargs.get("first_page", 1) + i))
                 out_path = os.path.join(output_dir, f"{base_name}_page{page_num}.{fmt}")
-                pil_image.save(out_path, format=fmt.upper())
+                pil_image.save(out_path, format=pil_fmt)
                 output_paths.append(out_path)
 
             return output_paths if output_paths else [f"No pages rendered from PDF"]
@@ -259,7 +283,7 @@ class PDFService:
           - format (str): output format, default "png"
           - min_size (int): minimum pixel dimension to keep (skip tiny icons), default 50
         """
-        fmt = params.get("format", "png")
+        fmt, pil_fmt = _normalize_image_format(params.get("format", "png"), "png")
         min_size = int(params.get("min_size", 50))
 
         try:
@@ -282,9 +306,9 @@ class PDFService:
                                 output_dir,
                                 f"{base_name}_img_p{page_num}_{img_idx}.{fmt}"
                             )
-                            if fmt.upper() == "JPEG" and pil_image.mode in ("RGBA", "P", "LA"):
+                            if pil_fmt == "JPEG" and pil_image.mode in ("RGBA", "P", "LA"):
                                 pil_image = pil_image.convert("RGB")
-                            pil_image.save(out_path, format=fmt.upper())
+                            pil_image.save(out_path, format=pil_fmt)
                             output_paths.append(out_path)
                             img_idx += 1
                         except Exception:
@@ -547,7 +571,8 @@ class PDFService:
         """
         from reportlab.lib.colors import Color
 
-        text = params.get("text", "CONFIDENTIAL")
+        text = str(params.get("text", "CONFIDENTIAL")).strip() or "CONFIDENTIAL"
+        text = text[:120]
         try:
             opacity = float(params.get("opacity", 0.15))
         except (ValueError, TypeError):
@@ -566,6 +591,8 @@ class PDFService:
 
         try:
             reader = PdfReader(input_path)
+            if not reader.pages:
+                raise ValueError("Input PDF has no pages")
             page_w = float(reader.pages[0].mediabox.width)
             page_h = float(reader.pages[0].mediabox.height)
 

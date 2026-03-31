@@ -11,6 +11,7 @@ import json
 import asyncio
 import logging
 import mimetypes
+import re
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta, timezone
 
@@ -26,6 +27,67 @@ from services.study_service import StudyService
 from services.diagram_service import DiagramService
 
 logger = logging.getLogger(__name__)
+
+
+_GENERATIVE_OPS = {
+    "generate_latex_pdf", "generate_study_pack", "generate_study_schedule",
+    "generate_formula_sheet", "generate_revision_notes", "generate_practice_questions",
+    "generate_flashcards", "generate_worksheet", "generate_exam",
+    "generate_from_template", "generate_diagram",
+}
+
+_OP_ALIASES = {
+    "draw_diagram": "generate_diagram", "create_diagram": "generate_diagram",
+    "vector_diagram": "generate_diagram", "plot_diagram": "generate_diagram",
+    "make_diagram": "generate_diagram", "draw_vectors": "generate_diagram",
+    "create_study_pack": "generate_study_pack", "make_study_pack": "generate_study_pack",
+    "create_worksheet": "generate_worksheet", "make_worksheet": "generate_worksheet",
+    "create_exam": "generate_exam", "make_exam": "generate_exam",
+    "create_flashcards": "generate_flashcards", "make_flashcards": "generate_flashcards",
+    "create_formula_sheet": "generate_formula_sheet",
+    "create_revision_notes": "generate_revision_notes",
+    "create_latex_pdf": "generate_latex_pdf", "latex_pdf": "generate_latex_pdf",
+}
+
+
+def _safe_output_filename(filename: str, default_name: str) -> str:
+    """Sanitize user-provided output filenames and prevent path traversal."""
+    name = str(filename or "").strip()
+    if not name:
+        return default_name
+    name = os.path.basename(name)
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    name = name.strip("._")
+    return name or default_name
+
+
+def _normalize_operation(operation: str) -> str:
+    """Normalize operation names and recover from malformed AI outputs."""
+    op = str(operation or "").strip().lower().replace("-", "_").replace(" ", "_")
+    op = re.sub(r"[^a-z0-9_]", "", op)
+    if op in _OP_ALIASES:
+        return _OP_ALIASES[op]
+
+    # Heuristic recovery if model returns a sentence in operation field.
+    raw = str(operation or "").lower()
+    if "watermark" in raw and "pdf" in raw:
+        return "watermark_pdf"
+    if "extract" in raw and "image" in raw and "pdf" in raw:
+        return "extract_pdf_images"
+    if "render" in raw and "pdf" in raw and "image" in raw:
+        return "pdf_pages_to_images"
+    if "study" in raw and "pack" in raw:
+        return "generate_study_pack"
+    if "worksheet" in raw:
+        return "generate_worksheet"
+    if "exam" in raw:
+        return "generate_exam"
+    if "diagram" in raw or "plot" in raw:
+        return "generate_diagram"
+    if "latex" in raw and "pdf" in raw:
+        return "generate_latex_pdf"
+
+    return _OP_ALIASES.get(op, op)
 
 
 class FileService:
@@ -95,6 +157,9 @@ class FileService:
         params: Dict[str, Any],
         conversation_id: str,
     ) -> Tuple[str, List[FileDoc]]:
+        params = params if isinstance(params, dict) else {}
+        operation = _normalize_operation(operation)
+
         # Fetch files
         files: List[FileDoc] = []
         for fid in file_ids:
@@ -104,29 +169,6 @@ class FileService:
 
         if not files:
             files = await FileService.get_conversation_files(db, conversation_id)
-
-        # Operations that can work without uploaded files (generative)
-        _GENERATIVE_OPS = {
-            "generate_latex_pdf", "generate_study_pack", "generate_study_schedule",
-            "generate_formula_sheet", "generate_revision_notes", "generate_practice_questions",
-            "generate_flashcards", "generate_worksheet", "generate_exam",
-            "generate_from_template", "generate_diagram",
-        }
-
-        # Normalize common AI operation name variants
-        _OP_ALIASES = {
-            "draw_diagram": "generate_diagram", "create_diagram": "generate_diagram",
-            "vector_diagram": "generate_diagram", "plot_diagram": "generate_diagram",
-            "make_diagram": "generate_diagram", "draw_vectors": "generate_diagram",
-            "create_study_pack": "generate_study_pack", "make_study_pack": "generate_study_pack",
-            "create_worksheet": "generate_worksheet", "make_worksheet": "generate_worksheet",
-            "create_exam": "generate_exam", "make_exam": "generate_exam",
-            "create_flashcards": "generate_flashcards", "make_flashcards": "generate_flashcards",
-            "create_formula_sheet": "generate_formula_sheet",
-            "create_revision_notes": "generate_revision_notes",
-            "create_latex_pdf": "generate_latex_pdf", "latex_pdf": "generate_latex_pdf",
-        }
-        operation = _OP_ALIASES.get(operation, operation)
 
         if not files and operation not in _GENERATIVE_OPS:
             return "No files found to process. Please upload files first.", []
@@ -550,16 +592,20 @@ async def _dispatch_operation(
     # ── Generative & Advanced Operations ─────────────────────────────
     elif operation == "generate_latex_pdf":
         latex_code = params.get("latex_code", "")
-        if not latex_code:
-            return "No LaTeX code provided.", []
+        custom_prompt = str(params.get("prompt", "")).strip()
+        if not latex_code and not custom_prompt:
+            return "No LaTeX code or prompt provided.", []
             
-        filename = params.get("filename", "document.pdf")
+        filename = _safe_output_filename(params.get("filename", "document.pdf"), "document.pdf")
         if not filename.endswith(".pdf"):
             filename += ".pdf"
             
         out_path = os.path.join(output_dir, filename)
-        
-        msg = await PDFService.generate_latex_pdf(latex_code, out_path, params)
+
+        if latex_code:
+            msg = await PDFService.generate_latex_pdf(latex_code, out_path, params)
+        else:
+            msg = await StudyService.generate_custom_pdf(out_path, {"prompt": custom_prompt})
         
         rec = await _create_output_record(
             db, conversation_id, filename, out_path, "application/pdf", "document", operation
@@ -569,7 +615,7 @@ async def _dispatch_operation(
     # ── Utility operations ──────────────────────────────────────────
     elif operation == "zip_files":
         import zipfile as zf_mod
-        zip_name = params.get("filename", "modex_archive.zip")
+        zip_name = _safe_output_filename(params.get("filename", "modex_archive.zip"), "modex_archive.zip")
         if not zip_name.endswith(".zip"):
             zip_name += ".zip"
         out_path = os.path.join(output_dir, zip_name)
@@ -611,7 +657,7 @@ async def _dispatch_operation(
 
     # ── Study & Education Operations ──────────────────────────────
     elif operation == "generate_study_pack":
-        filename = params.get("filename", "study_pack.pdf")
+        filename = _safe_output_filename(params.get("filename", "study_pack.pdf"), "study_pack.pdf")
         if not filename.endswith(".pdf"):
             filename += ".pdf"
         out_path = os.path.join(output_dir, filename)
@@ -620,7 +666,7 @@ async def _dispatch_operation(
         return msg, [rec]
 
     elif operation == "generate_study_schedule":
-        filename = params.get("filename", "study_schedule.pdf")
+        filename = _safe_output_filename(params.get("filename", "study_schedule.pdf"), "study_schedule.pdf")
         if not filename.endswith(".pdf"):
             filename += ".pdf"
         out_path = os.path.join(output_dir, filename)
@@ -629,7 +675,7 @@ async def _dispatch_operation(
         return msg, [rec]
 
     elif operation == "generate_formula_sheet":
-        filename = params.get("filename", "formula_sheet.pdf")
+        filename = _safe_output_filename(params.get("filename", "formula_sheet.pdf"), "formula_sheet.pdf")
         if not filename.endswith(".pdf"):
             filename += ".pdf"
         out_path = os.path.join(output_dir, filename)
@@ -638,7 +684,7 @@ async def _dispatch_operation(
         return msg, [rec]
 
     elif operation == "generate_revision_notes":
-        filename = params.get("filename", "revision_notes.pdf")
+        filename = _safe_output_filename(params.get("filename", "revision_notes.pdf"), "revision_notes.pdf")
         if not filename.endswith(".pdf"):
             filename += ".pdf"
         out_path = os.path.join(output_dir, filename)
@@ -660,7 +706,7 @@ async def _dispatch_operation(
         return msg, [rec]
 
     elif operation == "generate_practice_questions":
-        filename = params.get("filename", "practice_questions.pdf")
+        filename = _safe_output_filename(params.get("filename", "practice_questions.pdf"), "practice_questions.pdf")
         if not filename.endswith(".pdf"):
             filename += ".pdf"
         out_path = os.path.join(output_dir, filename)
@@ -669,7 +715,7 @@ async def _dispatch_operation(
         return msg, [rec]
 
     elif operation == "generate_flashcards":
-        filename = params.get("filename", "flashcards.pdf")
+        filename = _safe_output_filename(params.get("filename", "flashcards.pdf"), "flashcards.pdf")
         if not filename.endswith(".pdf"):
             filename += ".pdf"
         out_path = os.path.join(output_dir, filename)
@@ -678,7 +724,7 @@ async def _dispatch_operation(
         return msg, [rec]
 
     elif operation == "generate_worksheet":
-        filename = params.get("filename", "worksheet.pdf")
+        filename = _safe_output_filename(params.get("filename", "worksheet.pdf"), "worksheet.pdf")
         if not filename.endswith(".pdf"):
             filename += ".pdf"
         out_path = os.path.join(output_dir, filename)
@@ -687,7 +733,7 @@ async def _dispatch_operation(
         return msg, [rec]
 
     elif operation == "generate_exam":
-        filename = params.get("filename", "exam_paper.pdf")
+        filename = _safe_output_filename(params.get("filename", "exam_paper.pdf"), "exam_paper.pdf")
         if not filename.endswith(".pdf"):
             filename += ".pdf"
         out_path = os.path.join(output_dir, filename)
@@ -711,7 +757,7 @@ async def _dispatch_operation(
                 pass
         if not source_text.strip():
             return "No readable content found in uploaded files.", []
-        filename = params.get("filename", "cleaned_notes.pdf")
+        filename = _safe_output_filename(params.get("filename", "cleaned_notes.pdf"), "cleaned_notes.pdf")
         if not filename.endswith(".pdf"):
             filename += ".pdf"
         out_path = os.path.join(output_dir, filename)
@@ -720,7 +766,7 @@ async def _dispatch_operation(
         return msg, [rec]
 
     elif operation == "generate_from_template":
-        filename = params.get("filename", "document.pdf")
+        filename = _safe_output_filename(params.get("filename", "document.pdf"), "document.pdf")
         if not filename.endswith(".pdf"):
             filename += ".pdf"
         out_path = os.path.join(output_dir, filename)
@@ -748,7 +794,7 @@ async def _dispatch_operation(
         if len(files) < 1:
             return "Please upload files to synthesize.", []
         file_infos = [{"path": f.storage_path, "filename": f.original_filename, "type": f.file_type} for f in files]
-        filename = params.get("filename", "synthesized.pdf")
+        filename = _safe_output_filename(params.get("filename", "synthesized.pdf"), "synthesized.pdf")
         if not filename.endswith(".pdf"):
             filename += ".pdf"
         out_path = os.path.join(output_dir, filename)
@@ -758,7 +804,7 @@ async def _dispatch_operation(
 
     # ── Diagram Generation ────────────────────────────────────────
     elif operation == "generate_diagram":
-        requested_filename = str(params.get("filename", "")).strip()
+        requested_filename = _safe_output_filename(str(params.get("filename", "")).strip(), "")
         requested_format = params.get("output_format")
         if requested_format is None and requested_filename.lower().endswith(".pdf"):
             output_format = "png"

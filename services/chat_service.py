@@ -50,6 +50,14 @@ def _sanitize_assistant_explanation(operation: str, explanation: str) -> str:
     return explanation
 
 
+def _looks_like_pdf_generation_request(user_message: str) -> bool:
+    msg = (user_message or "").lower()
+    return (
+        "pdf" in msg
+        and any(k in msg for k in ("make", "create", "generate", "build", "prepare", "do it"))
+    )
+
+
 class ChatService:
 
     @staticmethod
@@ -156,7 +164,26 @@ class ChatService:
         )
 
         if decision.get("needs_clarification"):
-            pass
+            # Deterministic fallback: explicit PDF generation requests should execute,
+            # not get stuck in repeated acknowledgement text.
+            if _looks_like_pdf_generation_request(user_message):
+                try:
+                    result_msg, output_records = await FileService.process_operation(
+                        db=db,
+                        operation="generate_latex_pdf",
+                        file_ids=[],
+                        params={
+                            "prompt": user_message,
+                            "filename": "document.pdf",
+                        },
+                        conversation_id=conversation_id,
+                    )
+                    assistant_content = f"Generating your requested PDF.\n\n**Result:** {result_msg}"
+                    processed_files = output_records
+                except Exception as e:
+                    assistant_content = _safe_error_msg(e, "generating your pdf")
+            else:
+                pass
         elif decision["operation"] == CHAT_OPERATION:
             # General conversational response — no file processing needed
             assistant_content = await general_chat(
