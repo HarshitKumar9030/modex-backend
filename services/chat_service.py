@@ -24,7 +24,7 @@ from services.file_service import FileService
 logger = logging.getLogger(__name__)
 
 # Overall timeout for the full send_message pipeline (AI interpretation + all processing)
-MESSAGE_PIPELINE_TIMEOUT = 180  # seconds
+MESSAGE_PIPELINE_TIMEOUT = settings.MESSAGE_PIPELINE_TIMEOUT_SECONDS
 
 
 def _safe_error_msg(error: Exception, context: str = "processing your request") -> str:

@@ -202,12 +202,12 @@ class StudyService:
                     model=settings.AI_MODEL,
                     contents=[types.Content(role="user", parts=[types.Part.from_text(text=prompt)])],
                     config=types.GenerateContentConfig(
-                        system_instruction="You are a LaTeX document generator. Output ONLY valid, complete, compilable LaTeX code. No explanations, no markdown fences, just raw LaTeX starting with \\documentclass and ending with \\end{document}. CRITICAL: Do NOT use tcolorbox, tikz, pgfplots, or lastpage packages. Use only standard packages: amsmath, amssymb, geometry, xcolor, enumitem, fancyhdr, multicol, tabularx, booktabs, array, hyperref, mdframed. For colored boxes use \\colorbox or \\fbox.",
+                        system_instruction="You are a LaTeX document generator. Output ONLY valid, complete, compilable LaTeX code. No explanations, no markdown fences, just raw LaTeX starting with \\documentclass and ending with \\end{document}. CRITICAL: Do NOT use tcolorbox, tikz, pgfplots, or lastpage packages. Use only standard packages: amsmath, amssymb, geometry, xcolor, enumitem, fancyhdr, multicol, tabularx, booktabs, array, hyperref, mdframed. For colored boxes use \\colorbox or \\fbox. IMPORTANT: Follow the prompt exactly and include only requested sections/content. Do not add extra sections, bonus material, or assumptions beyond the prompt.",
                         temperature=0.2,
                         max_output_tokens=settings.AI_MAX_TOKENS,
                     ),
                 ),
-                timeout=90,
+                timeout=settings.STUDY_GEN_TIMEOUT_SECONDS,
             )
 
             if not response.text:

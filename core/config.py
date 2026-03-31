@@ -30,7 +30,13 @@ class Settings(BaseSettings):
 
     # AI Model — Gemini 2.5 Flash (fast & cheap)
     AI_MODEL: str = "gemini-2.5-flash"
-    AI_MAX_TOKENS: int = 8192
+    AI_MAX_TOKENS: int = 65536
+    AI_REQUEST_TIMEOUT_SECONDS: int = 300
+    AI_ANALYSIS_TIMEOUT_SECONDS: int = 420
+    STUDY_GEN_TIMEOUT_SECONDS: int = 420
+    MESSAGE_PIPELINE_TIMEOUT_SECONDS: int = 1200
+    AI_MAX_RETRIES: int = 5
+    AI_RETRY_DELAYS_SECONDS: str = "2,5,10,20"
 
     # Data retention policy — strict, auto-delete after N hours
     DATA_RETENTION_HOURS: int = 24

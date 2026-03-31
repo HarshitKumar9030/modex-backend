@@ -20,9 +20,13 @@ logger = logging.getLogger(__name__)
 
 # ── Retry / resilience config ─────────────────────────────────────
 
-MAX_RETRIES = 3
-RETRY_DELAYS = [1, 3, 7]  # seconds between retries (exponential-ish)
-AI_TIMEOUT_SECONDS = 60   # hard cap per Gemini call
+MAX_RETRIES = settings.AI_MAX_RETRIES
+RETRY_DELAYS = [
+    int(x.strip())
+    for x in settings.AI_RETRY_DELAYS_SECONDS.split(",")
+    if x.strip().isdigit()
+] or [2, 5, 10, 20]
+AI_TIMEOUT_SECONDS = settings.AI_REQUEST_TIMEOUT_SECONDS
 
 # Transient errors worth retrying (overloaded, rate-limited, network hiccup)
 # We check exception type first, then fall back to cautious string matching.
@@ -143,7 +147,7 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 ### Document Operations
 - document_to_pdf: (for txt, md, csv, json, html, xml, rtf, log files) params → {}
   ### Generative PDF Operations (CRITICAL: USE THIS INSTEAD OF SAYING YOU CANNOT CREATE PDFS)
-  - generate_latex_pdf: Generate a high-quality PDF using LaTeX (ideal for math, schedules, formulas, vectors, physics, resumes, diagrams, academic papers). You MUST write COMPLETE, VALID, COMPILABLE LaTeX code in the params. NEVER say 'I cannot directly create a PDF', because you CAN by returning this operation! params -> { "latex_code": "\\documentclass{article}...\\end{document}", "filename": "document.pdf" }
+    - generate_latex_pdf: Generate a high-quality PDF using LaTeX (ideal for math, schedules, formulas, vectors, physics, resumes, diagrams, academic papers). You MUST write COMPLETE, VALID, COMPILABLE LaTeX code in the params. NEVER say 'I cannot directly create a PDF', because you CAN by returning this operation! STRICTNESS: follow the user prompt exactly, do not add extra sections/features not requested, and preserve requested wording/structure as closely as possible. params -> { "latex_code": "\\documentclass{article}...\\end{document}", "filename": "document.pdf" }
 
 ### Study & Education Operations (generate educational content as professional PDF)
 - generate_study_pack: Generate a COMPLETE study pack (schedule + formula sheet + revision notes + practice questions + worked solutions + flashcard summary) as a single PDF. params → { "topic": "Vectors and 3D Geometry", "duration": "3 hours", "level": "beginner"|"intermediate"|"advanced" }
@@ -218,6 +222,8 @@ You can handle PDFs, images, audio AND text/document files (txt, md, csv, json, 
 37. For "revision notes", "study notes", "summary notes for X" → use generate_revision_notes.
 38. For "practice questions", "give me questions on X", "problems with solutions" → use generate_practice_questions.
 39. IMPORTANT: Study/education operations (generate_study_pack, generate_worksheet, etc.) do NOT require uploaded files — they generate content from AI knowledge. formula_ocr, cleanup_notes, and synthesize_files DO require uploaded files.
+40. If the user gives explicit PDF content/layout instructions (for example: exact sections, exact wording, exact format), prioritize generate_latex_pdf and follow those instructions strictly. Do not expand scope.
+41. For generate_latex_pdf, include only what the user asked for. Avoid unsolicited extras, bonus sections, or style additions unless explicitly requested.
 """
 
 # ── JSON schema for structured output ─────────────────────────────
@@ -489,7 +495,7 @@ async def analyze_file_content(
                         max_output_tokens=settings.AI_MAX_TOKENS,
                     ),
                 ),
-                timeout=AI_TIMEOUT_SECONDS,
+                timeout=settings.AI_ANALYSIS_TIMEOUT_SECONDS,
             )
             return response.text or "I could not generate a response for this content."
         except asyncio.TimeoutError:
